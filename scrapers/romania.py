@@ -24,17 +24,17 @@ class RomaniaScraper(BaseScraper):
 
     def _generate_grid(self):
         """
-        Шаг 0.07 градуса ≈ 7км — перекрывает радиус 5км.
-        Румыния: lat 43.6–48.3, lon 20.2–29.7
+        Шаг 0.06 градуса ≈ 6км.
+        Границы Румынии: lat 43.62–48.27, lon 20.26–29.74
         """
         points = []
-        lat = 43.6
-        while lat <= 48.3:
-            lon = 20.2
-            while lon <= 29.7:
-                points.append((round(lat, 2), round(lon, 2)))
-                lon += 0.07
-            lat += 0.07
+        lat = 43.62
+        while lat <= 48.27:
+            lon = 20.26
+            while lon <= 29.74:
+                points.append((round(lat, 3), round(lon, 3)))
+                lon = round(lon + 0.06, 3)
+            lat = round(lat + 0.06, 3)
         return points
 
     def scrape(self):
