@@ -1,4 +1,5 @@
 import requests
+import time
 from .base import BaseScraper
 from db.supabase_client import upsert_station, upsert_price
 
@@ -19,12 +20,11 @@ class RomaniaScraper(BaseScraper):
             "22": "diesel_premium",
         }
 
-        self.buffer = 5000  # максимум 5км
+        self.buffer = 5000
 
     def _generate_grid(self):
         """
-        Генерирует сетку точек покрывающую всю Румынию.
-        Шаг ~0.07 градуса ≈ 7-8км — перекрывает радиус 5км.
+        Шаг 0.07 градуса ≈ 7км — перекрывает радиус 5км.
         Румыния: lat 43.6–48.3, lon 20.2–29.7
         """
         points = []
@@ -33,8 +33,8 @@ class RomaniaScraper(BaseScraper):
             lon = 20.2
             while lon <= 29.7:
                 points.append((round(lat, 2), round(lon, 2)))
-                lon += 0.07  # ~7км по долготе
-            lat += 0.07      # ~7км по широте
+                lon += 0.07
+            lat += 0.07
         return points
 
     def scrape(self):
@@ -46,11 +46,6 @@ class RomaniaScraper(BaseScraper):
         all_stations = {}
         all_prices = {}
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://monitorulpreturilor.info/",
-        }
-
         total_points = len(grid)
 
         for cat_id, fuel_type in self.fuel_categories.items():
@@ -58,17 +53,26 @@ class RomaniaScraper(BaseScraper):
             found_in_cat = 0
 
             for i, (lat, lon) in enumerate(grid):
-                # Прогресс каждые 500 точек
                 if i % 500 == 0:
                     print(f"[RO]   точка {i}/{total_points}...")
 
                 try:
+                    time.sleep(0.3)
+
                     params = {
                         "lat": lat,
                         "lon": lon,
                         "buffer": self.buffer,
                         "CSVGasCatalogProductIds": cat_id,
                         "OrderBy": "dist"
+                    }
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": "https://monitorulpreturilor.info/",
+                        "Origin": "https://monitorulpreturilor.info",
                     }
                     r = requests.get(
                         self.base_url, params=params,
@@ -99,7 +103,11 @@ class RomaniaScraper(BaseScraper):
                                     all_prices[sid][fuel_type], float(price)
                                 )
 
-                except Exception:
+                except Exception as e:
+                    try:
+                        print(f"[RO] Ошибка ({lat},{lon}): {e} | Ответ: {r.text[:200]}")
+                    except Exception:
+                        print(f"[RO] Ошибка ({lat},{lon}): {e}")
                     continue
 
             print(f"[RO]   Новых АЗС в категории: {found_in_cat}")
