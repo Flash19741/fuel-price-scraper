@@ -21,9 +21,9 @@ class RomaniaScraper(BaseScraper):
         self.fuel_categories = {
             "11": "gasoline_95",
             "12": "gasoline_98",
-            "21": "diesel",
-            "31": "lpg",
-            "22": "diesel_premium",
+            "13": "diesel",
+            "14": "lpg",
+            "15": "diesel_premium",
         }
         self.buffer = 5000
 
