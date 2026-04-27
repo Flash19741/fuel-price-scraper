@@ -43,6 +43,27 @@ class RomaniaScraper(BaseScraper):
         grid = self._generate_grid()
         print(f"[RO] Сетка: {len(grid)} точек")
 
+        # ВРЕМЕННАЯ ДИАГНОСТИКА — удалим после отладки
+        test_params = {
+            "lat": 44.43,
+            "lon": 26.10,
+            "buffer": 5000,
+            "CSVGasCatalogProductIds": "11",
+            "OrderBy": "dist"
+        }
+        test_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://monitorulpreturilor.info/",
+        }
+        test_r = requests.get(self.base_url, params=test_params, headers=test_headers, timeout=15)
+        print(f"[RO DEBUG] Status: {test_r.status_code}")
+        print(f"[RO DEBUG] Headers: {dict(test_r.headers)}")
+        print(f"[RO DEBUG] Body (first 500): {test_r.text[:500]}")
+        return  # останавливаемся после диагностики
+
         all_stations = {}
         all_prices = {}
 
