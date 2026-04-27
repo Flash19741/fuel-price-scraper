@@ -7,6 +7,12 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 def get_client() -> Client:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise ValueError("Не найдены SUPABASE_URL или SUPABASE_KEY!")
+    
+    # Отладка — покажет первые символы ключа (не секретно)
+    print(f"[DEBUG] URL: {SUPABASE_URL}")
+    print(f"[DEBUG] KEY начинается с: {SUPABASE_KEY[:20]}...")
+    print(f"[DEBUG] Длина KEY: {len(SUPABASE_KEY)}")
+    
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -44,10 +50,12 @@ def upsert_price(client: Client, station_id: int, fuel_type: str,
 
 
 def log_scrape(client: Client, country: str) -> int:
+    print(f"[DEBUG] Пробуем вставить в scrape_logs, country={country}")
     result = client.table("scrape_logs").insert({
         "country": country,
         "status": "running"
     }).execute()
+    print(f"[DEBUG] Результат: {result.data}")
     return result.data[0]["id"]
 
 
