@@ -70,6 +70,12 @@ class RomaniaScraper(BaseScraper):
                     r.raise_for_status()
                     data = r.json()
 
+                    # ОТЛАДКА — покажет что реально приходит
+                    stations_in_response = len(data.get("Stations", []))
+                    products_in_response = len(data.get("Products", []))
+                    if stations_in_response > 0:
+                        print(f"[RO] ({lat},{lon}) cat={cat_id}: {stations_in_response} АЗС, {products_in_response} цен")
+
                     # Сохраняем станции
                     for st in data.get("Stations", []):
                         sid = st.get("id")
