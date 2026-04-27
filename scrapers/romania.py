@@ -4,11 +4,6 @@ from db.supabase_client import upsert_station, upsert_price
 
 
 class RomaniaScraper(BaseScraper):
-    """
-    API возвращает АЗС в радиусе вокруг точки.
-    Покрываем всю Румынию сеткой из ~20 точек с радиусом 80км каждая.
-    Станции и цены приходят отдельно — соединяем по stationid.
-    """
 
     def __init__(self, client):
         super().__init__(client)
@@ -16,33 +11,39 @@ class RomaniaScraper(BaseScraper):
         self.currency = "RON"
         self.base_url = "https://monitorulpreturilor.info/pmonsvc/Gas/GetGasItemsByLatLon"
 
-        # Категории топлива на сайте
-        # 11=benzina 95, 12=benzina 98, 13=motorina, 14=GPL, 15=motorina premium
         self.fuel_categories = {
             "11": "gasoline_95",
             "12": "gasoline_98",
-            "13": "diesel",
-            "14": "lpg",
-            "15": "diesel_premium",
+            "21": "diesel",
+            "31": "lpg",
+            "22": "diesel_premium",
         }
 
-        # Сетка точек покрывающая всю Румынию (lat, lon)
-        # Радиус 80км = 80000м — каждая точка покрывает ~160x160км
-        self.grid_points = [
-            (48.2, 22.5), (48.2, 25.5), (48.2, 28.0),
-            (46.5, 21.5), (46.5, 24.0), (46.5, 26.5), (46.5, 29.0),
-            (45.0, 22.5), (45.0, 25.0), (45.0, 27.5),
-            (44.5, 23.5), (44.5, 26.0), (44.5, 28.5),
-            (43.8, 22.5), (43.8, 25.5), (43.8, 28.0),
-        ]
-        self.buffer = 80000  # радиус в метрах
+        self.buffer = 5000  # максимум 5км
+
+    def _generate_grid(self):
+        """
+        Генерирует сетку точек покрывающую всю Румынию.
+        Шаг ~0.07 градуса ≈ 7-8км — перекрывает радиус 5км.
+        Румыния: lat 43.6–48.3, lon 20.2–29.7
+        """
+        points = []
+        lat = 43.6
+        while lat <= 48.3:
+            lon = 20.2
+            while lon <= 29.7:
+                points.append((round(lat, 2), round(lon, 2)))
+                lon += 0.07  # ~7км по долготе
+            lat += 0.07      # ~7км по широте
+        return points
 
     def scrape(self):
         print(f"[RO] Начинаем сбор данных Румынии...")
 
-        # Словарь всех найденных станций: station_id -> данные
+        grid = self._generate_grid()
+        print(f"[RO] Сетка: {len(grid)} точек")
+
         all_stations = {}
-        # Словарь цен: station_id -> список {fuel_type, price}
         all_prices = {}
 
         headers = {
@@ -50,11 +51,17 @@ class RomaniaScraper(BaseScraper):
             "Referer": "https://monitorulpreturilor.info/",
         }
 
-        # Запрашиваем каждую категорию топлива по каждой точке сетки
-        for cat_id, fuel_type in self.fuel_categories.items():
-            print(f"[RO] Собираем {fuel_type} (cat {cat_id})...")
+        total_points = len(grid)
 
-            for lat, lon in self.grid_points:
+        for cat_id, fuel_type in self.fuel_categories.items():
+            print(f"[RO] Категория {fuel_type}...")
+            found_in_cat = 0
+
+            for i, (lat, lon) in enumerate(grid):
+                # Прогресс каждые 500 точек
+                if i % 500 == 0:
+                    print(f"[RO]   точка {i}/{total_points}...")
+
                 try:
                     params = {
                         "lat": lat,
@@ -65,31 +72,26 @@ class RomaniaScraper(BaseScraper):
                     }
                     r = requests.get(
                         self.base_url, params=params,
-                        headers=headers, timeout=30
+                        headers=headers, timeout=15
                     )
-                    r.raise_for_status()
+
+                    if r.status_code != 200:
+                        continue
+
                     data = r.json()
 
-                    # ОТЛАДКА — покажет что реально приходит
-                    stations_in_response = len(data.get("Stations", []))
-                    products_in_response = len(data.get("Products", []))
-                    if stations_in_response > 0:
-                        print(f"[RO] ({lat},{lon}) cat={cat_id}: {stations_in_response} АЗС, {products_in_response} цен")
-
-                    # Сохраняем станции
                     for st in data.get("Stations", []):
                         sid = st.get("id")
                         if sid and sid not in all_stations:
                             all_stations[sid] = st
+                            found_in_cat += 1
 
-                    # Сохраняем цены
                     for pr in data.get("Products", []):
                         sid = pr.get("stationid")
                         price = pr.get("price")
                         if sid and price:
                             if sid not in all_prices:
                                 all_prices[sid] = {}
-                            # Берём минимальную цену если несколько продуктов одной категории
                             if fuel_type not in all_prices[sid]:
                                 all_prices[sid][fuel_type] = float(price)
                             else:
@@ -97,18 +99,18 @@ class RomaniaScraper(BaseScraper):
                                     all_prices[sid][fuel_type], float(price)
                                 )
 
-                except Exception as e:
-                    print(f"[RO] Ошибка точки ({lat},{lon}) cat {cat_id}: {e}")
+                except Exception:
                     continue
 
-        print(f"[RO] Найдено уникальных АЗС: {len(all_stations)}")
+            print(f"[RO]   Новых АЗС в категории: {found_in_cat}")
 
-        # Сохраняем в БД
+        print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
+
         for sid, st_data in all_stations.items():
             try:
                 self._save_station(sid, st_data, all_prices.get(sid, {}))
             except Exception as e:
-                print(f"[RO] Ошибка сохранения станции {sid}: {e}")
+                print(f"[RO] Ошибка станции {sid}: {e}")
 
         print(f"[RO] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
@@ -127,7 +129,7 @@ class RomaniaScraper(BaseScraper):
             "brand": network.get("id", brand),
             "name": st.get("name", brand),
             "address": addr.get("addrstring", ""),
-            "city": "",  # API не даёт город отдельно
+            "city": "",
             "latitude": lat,
             "longitude": lon,
             "logo_url": logo,
