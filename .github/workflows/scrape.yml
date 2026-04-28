@@ -2,36 +2,31 @@ name: Fuel Price Scraper
 
 on:
   schedule:
-    # Запуск в 08:00 UTC = 10:00 Moldova (UTC+2 летом)
     - cron: '0 8 * * *'
-    # Запуск в 20:00 UTC = 22:00 Moldova
     - cron: '0 20 * * *'
-  
-  # Позволяет запустить вручную из интерфейса GitHub
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      
+
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
+
+      - name: Check moldova file
+        run: cat scrapers/moldova.py
+
       - name: Run scrapers
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          echo "=== Проверка файлов ==="
-          cat scrapers/moldova.py
-          echo "=== Запуск ==="
-          python main.py
+        run: python main.py
