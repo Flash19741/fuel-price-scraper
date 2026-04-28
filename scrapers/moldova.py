@@ -50,6 +50,7 @@ class MoldovaScraper(BaseScraper):
 
         # Уникальный ID = координаты (решает проблему дублей по idno)
         source_id = f"{lat}_{lon}"
+        print(f"[MD DEBUG] source_id = {source_id}")
 
         brand = data.get("station_name", "Unknown").strip()
         city = data.get("lev1", "") or data.get("bua", "") or ""
