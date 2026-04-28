@@ -1,13 +1,13 @@
 import requests
 import time
 from lxml import etree
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .base import BaseScraper
 from db.supabase_client import upsert_station, upsert_price
 
 NS = "http://schemas.datacontract.org/2004/07/pmonsvc.Models.Protos"
 
 def xt(el, tag):
-    """Получает текст из XML тега с namespace."""
     found = el.find(f"{{{NS}}}{tag}")
     return found.text.strip() if found is not None and found.text else ""
 
@@ -21,14 +21,13 @@ class RomaniaScraper(BaseScraper):
         self.fuel_categories = {
             "11": "gasoline_95",
             "12": "gasoline_98",
-            "13": "diesel",
-            "14": "lpg",
-            "15": "diesel_premium",
+            "21": "diesel",
+            "31": "lpg",
+            "22": "diesel_premium",
         }
         self.buffer = 5000
 
     def _generate_grid(self):
-        """Шаг 0.06 градуса ≈ 6км. Границы Румынии: lat 43.62–48.27, lon 20.26–29.74"""
         points = []
         lat = 43.62
         while lat <= 48.27:
@@ -39,6 +38,31 @@ class RomaniaScraper(BaseScraper):
             lat = round(lat + 0.06, 3)
         return points
 
+    def _fetch_one(self, lat, lon, cat_id):
+        """Один запрос к API — возвращает (stations, prices) или ([], [])."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/xml, text/xml, */*",
+            "Referer": "https://monitorulpreturilor.info/",
+        }
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "buffer": self.buffer,
+            "CSVGasCatalogProductIds": cat_id,
+            "OrderBy": "dist"
+        }
+        try:
+            r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
+            if r.status_code != 200:
+                return [], []
+            root = etree.fromstring(r.content)
+            stations = root.findall(f".//{{{NS}}}GasStation")
+            products = root.findall(f".//{{{NS}}}GasProduct")
+            return stations, products
+        except Exception:
+            return [], []
+
     def scrape(self):
         print(f"[RO] Начинаем сбор данных Румынии...")
         grid = self._generate_grid()
@@ -47,48 +71,32 @@ class RomaniaScraper(BaseScraper):
         all_stations = {}
         all_prices = {}
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/xml, text/xml, */*",
-            "Referer": "https://monitorulpreturilor.info/",
-        }
-
-        total = len(grid)
-
         for cat_id, fuel_type in self.fuel_categories.items():
             print(f"[RO] Категория {fuel_type}...")
             found_in_cat = 0
 
-            for i, (lat, lon) in enumerate(grid):
-                if i % 500 == 0:
-                    print(f"[RO]   точка {i}/{total}...")
+            # Параллельные запросы — 20 потоков одновременно
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = {
+                    executor.submit(self._fetch_one, lat, lon, cat_id): (lat, lon)
+                    for lat, lon in grid
+                }
 
-                try:
-                    time.sleep(0.1)
-                    params = {
-                        "lat": lat,
-                        "lon": lon,
-                        "buffer": self.buffer,
-                        "CSVGasCatalogProductIds": cat_id,
-                        "OrderBy": "dist"
-                    }
-                    r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
+                done = 0
+                for future in as_completed(futures):
+                    done += 1
+                    if done % 1000 == 0:
+                        print(f"[RO]   {done}/{len(grid)} запросов...")
 
-                    if r.status_code != 200:
-                        continue
+                    stations_els, products_els = future.result()
 
-                    # Парсим XML
-                    root = etree.fromstring(r.content)
-
-                    # Станции
-                    for st in root.findall(f".//{{{NS}}}GasStation"):
+                    for st in stations_els:
                         sid = xt(st, "Id")
                         if sid and sid not in all_stations:
                             all_stations[sid] = st
                             found_in_cat += 1
 
-                    # Цены
-                    for pr in root.findall(f".//{{{NS}}}GasProduct"):
+                    for pr in products_els:
                         sid = xt(pr, "Stationid")
                         price_str = xt(pr, "Price")
                         if sid and price_str:
@@ -99,14 +107,13 @@ class RomaniaScraper(BaseScraper):
                                 if fuel_type not in all_prices[sid]:
                                     all_prices[sid][fuel_type] = price
                                 else:
-                                    all_prices[sid][fuel_type] = min(all_prices[sid][fuel_type], price)
+                                    all_prices[sid][fuel_type] = min(
+                                        all_prices[sid][fuel_type], price
+                                    )
                             except ValueError:
                                 pass
 
-                except Exception as e:
-                    continue
-
-            print(f"[RO]   Новых АЗС: {found_in_cat}")
+            print(f"[RO]   Новых АЗС в категории: {found_in_cat}")
 
         print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
 
@@ -121,9 +128,8 @@ class RomaniaScraper(BaseScraper):
     def _save_station(self, sid, st_el, prices):
         network_el = st_el.find(f"{{{NS}}}Network")
         brand = xt(network_el, "Id") if network_el is not None else "Unknown"
-        brand_name = xt(network_el, "n") if network_el is not None else brand
         logo_el = network_el.find(f"{{{NS}}}Logo") if network_el is not None else None
-        logo = xt(logo_el, "Logouri") if logo_el is not None else self.get_brand_logo(brand)
+        logo = xt(logo_el, "Logouri") if logo_el is not None else None
 
         addr_el = st_el.find(f"{{{NS}}}Addr")
         address = xt(addr_el, "Addrstring") if addr_el is not None else ""
@@ -134,7 +140,7 @@ class RomaniaScraper(BaseScraper):
         station = {
             "country": self.country,
             "brand": brand,
-            "name": xt(st_el, "n") or brand_name,
+            "name": xt(st_el, "Name") or brand,
             "address": address,
             "city": "",
             "latitude": lat,
