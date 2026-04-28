@@ -17,11 +17,22 @@ def get_client() -> Client:
 
 
 def upsert_station(client: Client, station: dict) -> int:
-    result = client.table("stations").upsert(
-        station,
-        on_conflict="country,source_id"
+    # Сначала пробуем найти существующую запись
+    existing = client.table("stations").select("id").eq(
+        "country", station["country"]
+    ).eq(
+        "source_id", station["source_id"]
     ).execute()
-    return result.data[0]["id"]
+    
+    if existing.data:
+        # Обновляем существующую
+        station_id = existing.data[0]["id"]
+        client.table("stations").update(station).eq("id", station_id).execute()
+        return station_id
+    else:
+        # Вставляем новую
+        result = client.table("stations").insert(station).execute()
+        return result.data[0]["id"]
 
 
 def upsert_price(client: Client, station_id: int, fuel_type: str,
