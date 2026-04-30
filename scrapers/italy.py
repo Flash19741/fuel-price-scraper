@@ -106,13 +106,13 @@ class ItalyScraper(BaseScraper):
     def scrape(self):
         print("[IT] Начинаем сбор данных Италии...")
         # ВРЕМЕННЫЙ ТЕСТ — удалить после проверки
-import json
-url = f"{self.api_base}/search/zone"
-body = {"town": "Altino", "province": "CH", "fuelType": "1", "radius": 10}
-r = requests.post(url, json=body, headers=self.headers, timeout=15)
-print(f"[DEBUG TEST] status={r.status_code}")
-print(f"[DEBUG TEST] response={json.dumps(r.json(), indent=2)[:1000]}")
-return  # останавливаем после теста
+        import json
+        url = f"{self.api_base}/search/zone"
+        body = {"town": "Altino", "province": "CH", "fuelType": "1", "radius": 10}
+        r = requests.post(url, json=body, headers=self.headers, timeout=15)
+        print(f"[DEBUG TEST] status={r.status_code}")
+        print(f"[DEBUG TEST] response={json.dumps(r.json(), indent=2)[:1000]}")
+        return  # останавливаем после теста
 
         # Шаг 1: получаем все регионы
         regions = self._get_regions()
