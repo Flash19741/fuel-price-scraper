@@ -61,33 +61,48 @@ class ItalyScraper(BaseScraper):
 
     def _search_by_town(self, town_id, province_code, fuel_type_id, fuel_type):
         """
-        Ищем АЗС в конкретном городе по его названию и коду провинции.
+        Ищем АЗС в конкретном городе.
+        Шаг 1: получаем координаты центра города через town/province запрос.
+        Шаг 2: ищем АЗС по этим координатам через points запрос.
         Возвращает два словаря: stations и prices.
         """
         stations = {}
         prices = {}
-
         url = f"{self.api_base}/search/zone"
-        body = {
-            "town": town_id,
-            "province": province_code,
-            "fuelType": fuel_type_id,
-            "radius": self.radius
-        }
+
+        # Шаг 1: получаем координаты центра города
         try:
-            r = requests.post(url, json=body, headers=self.headers, timeout=15)
+            r = requests.post(url, json={
+                "town": town_id,
+                "province": province_code,
+                "fuelType": fuel_type_id,
+                "radius": 1
+            }, headers=self.headers, timeout=15)
+            if r.status_code != 200:
+                return stations, prices
+            center = r.json().get("center", {})
+            lat = center.get("lat")
+            lon = center.get("lng")
+            if not lat or not lon:
+                return stations, prices
+        except Exception:
+            return stations, prices
+
+        # Шаг 2: ищем АЗС по координатам центра
+        try:
+            r = requests.post(url, json={
+                "points": [{"lat": lat, "lng": lon}],
+                "fuelType": fuel_type_id,
+                "radius": self.radius
+            }, headers=self.headers, timeout=15)
             if r.status_code != 200:
                 return stations, prices
 
-            results = r.json().get("results", [])
-
-            for st in results:
+            for st in r.json().get("results", []):
                 sid = str(st.get("id", ""))
                 if not sid:
                     continue
-
                 stations[sid] = st
-
                 for fuel in st.get("fuels", []):
                     price = fuel.get("price")
                     if price and float(price) > 0:
@@ -97,22 +112,13 @@ class ItalyScraper(BaseScraper):
                             prices[sid][fuel_type] = float(price)
                         else:
                             prices[sid][fuel_type] = min(prices[sid][fuel_type], float(price))
-
         except Exception:
             pass
 
         return stations, prices
 
     def scrape(self):
-        # ВРЕМЕННЫЙ ТЕСТ — удалить после проверки
-        import json
-        url = f"{self.api_base}/search/zone"
-        # Altino находится примерно здесь:
-        body = {"points": [{"lat": 42.08, "lng": 14.35}], "fuelType": "1", "radius": 10}
-        r = requests.post(url, json=body, headers=self.headers, timeout=15)
-        print(f"[DEBUG TEST] status={r.status_code}")
-        print(f"[DEBUG TEST] response={json.dumps(r.json(), indent=2)[:1000]}")
-        return
+        
 
         # Шаг 1: получаем все регионы
         regions = self._get_regions()
