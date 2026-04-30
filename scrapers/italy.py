@@ -124,7 +124,7 @@ class ItalyScraper(BaseScraper):
         "radius": self.radius
     }
     try:
-        r = requests.post(url, json=body, headers=self.headers, timeout=15)
+        r = requests.post (url, json=body, headers=self.headers, timeout=15)
         print(f"[DEBUG] town={town_id}, status={r.status_code}, body={r.text[:300]}")
     except Exception as e:
         print(f"[DEBUG] Ошибка: {e}")
