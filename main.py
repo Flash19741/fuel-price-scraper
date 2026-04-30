@@ -44,8 +44,8 @@ def main():
     
     # Запускаем скраперы по очереди
     scrapers = [
-        (MoldovaScraper, "MD"),  # временно отключено
-        (RomaniaScraper, "RO"),  # временно отключено
+        #  (MoldovaScraper, "MD"),  # временно отключено
+        #  (RomaniaScraper, "RO"),  # временно отключено
         (ItalyScraper,   "IT"),
     ]
     
