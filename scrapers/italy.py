@@ -47,7 +47,9 @@ class ItalyScraper(BaseScraper):
         try:
             r = requests.get(url, headers=self.headers, timeout=15)
             if r.status_code == 200:
-                return r.json()  # список регионов
+                data = r.json()
+                print(f"[DEBUG] Регионы: {data}")  # ← добавь эту строку
+                return data
         except Exception as e:
             print(f"[IT] Ошибка при получении регионов: {e}")
         return []
