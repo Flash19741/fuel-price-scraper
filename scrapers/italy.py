@@ -48,8 +48,8 @@ class ItalyScraper(BaseScraper):
             r = requests.get(url, headers=self.headers, timeout=15)
             if r.status_code == 200:
                 data = r.json()
-                print(f"[DEBUG] Регионы: {data}")  # ← добавь эту строку
-                return data
+                print(f"[DEBUG] Регионы: {data}")  # ← потом удали
+                return data.get("results", [])   # ← исправлено
         except Exception as e:
             print(f"[IT] Ошибка при получении регионов: {e}")
         return []
@@ -66,8 +66,8 @@ class ItalyScraper(BaseScraper):
             r = requests.get(url, headers=self.headers, timeout=15)
             if r.status_code == 200:
                 data = r.json()
-                print(f"[DEBUG] Пример провинции: {data[0]}")  # ← добавь эту строку
-                return data
+                print(f"[DEBUG] Провинции региона {region_id}: {data}")  # потом удали
+                return data.get("results", [])   # ← исправлено
         except Exception as e:
             print(f"[IT] Ошибка при получении провинций региона {region_id}: {e}")
         return []
@@ -83,7 +83,9 @@ class ItalyScraper(BaseScraper):
         try:
             r = requests.get(url, headers=self.headers, timeout=15)
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                print(f"[DEBUG] Города провинции {province_code}: {data}")  # потом удали
+                return data.get("results", [])   # ← исправлено
         except Exception as e:
             print(f"[IT] Ошибка при получении городов провинции {province_code}: {e}")
         return []
