@@ -114,20 +114,19 @@ class ItalyScraper(BaseScraper):
         return []
 
     def _test_town_search(self, town_id, province_code, fuel_type_id):
-    """Тест: ищем АЗС по названию города"""
-    url = f"{self.api_base}/search/zone"
-    # Попробуем передать town вместо координат
-    body = {
-        "town": town_id,
-        "province": province_code,
-        "fuelType": fuel_type_id,
-        "radius": self.radius
-    }
-    try:
-        r = requests.post (url, json=body, headers=self.headers, timeout=15)
-        print(f"[DEBUG] town={town_id}, status={r.status_code}, body={r.text[:300]}")
-    except Exception as e:
-        print(f"[DEBUG] Ошибка: {e}")
+        """Тест: ищем АЗС по названию города"""
+        url = f"{self.api_base}/search/zone"
+        body = {
+            "town": town_id,
+            "province": province_code,
+            "fuelType": fuel_type_id,
+            "radius": self.radius
+        }
+        try:
+            r = requests.post(url, json=body, headers=self.headers, timeout=15)
+            print(f"[DEBUG] town={town_id}, status={r.status_code}, body={r.text[:300]}")
+        except Exception as e:
+            print(f"[DEBUG] Ошибка: {e}")
 
     # ------------------------------------------------------------------
     # ГЛАВНЫЙ МЕТОД: scrape() — запускается планировщиком
