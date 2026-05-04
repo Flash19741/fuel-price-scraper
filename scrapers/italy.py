@@ -123,8 +123,8 @@ class ItalyScraper(BaseScraper):
         # ВРЕМЕННЫЙ ТЕСТ
         import json
         url = f"{self.api_base}/search/zone"
-        # Милан — крупный город, много АЗС
-        for radius in [10, 20, 50, 100]:
+        # Проверяем сколько АЗС при маленьком радиусе
+        for radius in [1, 2, 3, 5]:
             body = {"points": [{"lat": 45.464, "lng": 9.188}], "fuelType": "1", "radius": radius}
             r = requests.post(url, json=body, headers=self.headers, timeout=15)
             count = len(r.json().get("results", []))
