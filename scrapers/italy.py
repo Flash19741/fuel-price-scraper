@@ -118,7 +118,18 @@ class ItalyScraper(BaseScraper):
         return stations, prices
 
     def scrape(self):
-        
+
+
+        # ВРЕМЕННЫЙ ТЕСТ
+        import json
+        url = f"{self.api_base}/search/zone"
+        # Милан — крупный город, много АЗС
+        for radius in [10, 20, 50, 100]:
+            body = {"points": [{"lat": 45.464, "lng": 9.188}], "fuelType": "1", "radius": radius}
+            r = requests.post(url, json=body, headers=self.headers, timeout=15)
+            count = len(r.json().get("results", []))
+            print(f"[DEBUG] radius={radius}km → {count} АЗС")
+        return
 
         # Шаг 1: получаем все регионы
         regions = self._get_regions()
