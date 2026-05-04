@@ -20,7 +20,8 @@ class ItalyScraper(BaseScraper):
             "4": "lpg",
         }
 
-        self.radius = 10
+        # Радиус 5 км — не упираемся в лимит 343 АЗС на запрос
+        self.radius = 5
 
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -29,163 +30,97 @@ class ItalyScraper(BaseScraper):
             "Origin": "https://carburanti.mise.gov.it",
         }
 
-    def _get_regions(self):
-        url = f"{self.api_base}/registry/region"
-        try:
-            r = requests.get(url, headers=self.headers, timeout=15)
-            if r.status_code == 200:
-                return r.json().get("results", [])
-        except Exception as e:
-            print(f"[IT] Ошибка при получении регионов: {e}")
-        return []
-
-    def _get_provinces(self, region_id):
-        url = f"{self.api_base}/registry/province?regionId={region_id}"
-        try:
-            r = requests.get(url, headers=self.headers, timeout=15)
-            if r.status_code == 200:
-                return r.json().get("results", [])
-        except Exception as e:
-            print(f"[IT] Ошибка при получении провинций региона {region_id}: {e}")
-        return []
-
-    def _get_towns(self, province_code):
-        url = f"{self.api_base}/registry/town?province={province_code}"
-        try:
-            r = requests.get(url, headers=self.headers, timeout=15)
-            if r.status_code == 200:
-                return r.json().get("results", [])
-        except Exception as e:
-            print(f"[IT] Ошибка при получении городов провинции {province_code}: {e}")
-        return []
-
-    def _search_by_town(self, town_id, province_code, fuel_type_id, fuel_type):
+    def _generate_grid(self):
         """
-        Ищем АЗС в конкретном городе.
-        Шаг 1: получаем координаты центра города через town/province запрос.
-        Шаг 2: ищем АЗС по этим координатам через points запрос.
-        Возвращает два словаря: stations и prices.
+        Сетка точек по территории Италии.
+        Шаг 0.08 градуса ≈ 8 км — чуть меньше диаметра круга радиусом 5 км,
+        поэтому круги перекрываются и не оставляют пробелов.
+        Италия: lat 36.6–47.1, lon 6.6–18.5
+        Итого примерно 4700 точек.
         """
-        stations = {}
-        prices = {}
+        points = []
+        lat = 36.6
+        while lat <= 47.1:
+            lon = 6.6
+            while lon <= 18.5:
+                points.append((round(lat, 3), round(lon, 3)))
+                lon = round(lon + 0.08, 3)
+            lat = round(lat + 0.08, 3)
+        return points
+
+    def _fetch_one(self, lat, lon, fuel_type_id):
+        """
+        Один POST-запрос — возвращает список АЗС вокруг точки (lat, lon).
+        """
         url = f"{self.api_base}/search/zone"
-
-        # Шаг 1: получаем координаты центра города
+        body = {
+            "points": [{"lat": lat, "lng": lon}],
+            "fuelType": fuel_type_id,
+            "radius": self.radius
+        }
         try:
-            r = requests.post(url, json={
-                "town": town_id,
-                "province": province_code,
-                "fuelType": fuel_type_id,
-                "radius": 1
-            }, headers=self.headers, timeout=15)
-            if r.status_code != 200:
-                return stations, prices
-            center = r.json().get("center", {})
-            lat = center.get("lat")
-            lon = center.get("lng")
-            if not lat or not lon:
-                return stations, prices
-        except Exception:
-            return stations, prices
-
-        # Шаг 2: ищем АЗС по координатам центра
-        try:
-            r = requests.post(url, json={
-                "points": [{"lat": lat, "lng": lon}],
-                "fuelType": fuel_type_id,
-                "radius": self.radius
-            }, headers=self.headers, timeout=15)
-            if r.status_code != 200:
-                return stations, prices
-
-            for st in r.json().get("results", []):
-                sid = str(st.get("id", ""))
-                if not sid:
-                    continue
-                stations[sid] = st
-                for fuel in st.get("fuels", []):
-                    price = fuel.get("price")
-                    if price and float(price) > 0:
-                        if sid not in prices:
-                            prices[sid] = {}
-                        if fuel_type not in prices[sid]:
-                            prices[sid][fuel_type] = float(price)
-                        else:
-                            prices[sid][fuel_type] = min(prices[sid][fuel_type], float(price))
+            r = requests.post(url, json=body, headers=self.headers, timeout=15)
+            if r.status_code == 200:
+                return r.json().get("results", [])
         except Exception:
             pass
-
-        return stations, prices
+        return []
 
     def scrape(self):
+        print("[IT] Начинаем сбор данных Италии...")
 
+        grid = self._generate_grid()
+        print(f"[IT] Сетка: {len(grid)} точек, радиус {self.radius} км")
 
-        # ВРЕМЕННЫЙ ТЕСТ
-        import json
-        url = f"{self.api_base}/search/zone"
-        # Проверяем сколько АЗС при маленьком радиусе
-        for radius in [1, 2, 3, 5]:
-            body = {"points": [{"lat": 45.464, "lng": 9.188}], "fuelType": "1", "radius": radius}
-            r = requests.post(url, json=body, headers=self.headers, timeout=15)
-            count = len(r.json().get("results", []))
-            print(f"[DEBUG] radius={radius}km → {count} АЗС")
-        return
+        all_stations = {}  # sid -> данные станции
+        all_prices = {}    # sid -> {fuel_type -> min_price}
 
-        # Шаг 1: получаем все регионы
-        regions = self._get_regions()
-        if not regions:
-            print("[IT] Не удалось получить регионы! Прерываем.")
-            return
-        print(f"[IT] Найдено регионов: {len(regions)}")
+        for fuel_type_id, fuel_type in self.fuel_types.items():
+            print(f"[IT] Топливо: {fuel_type}...")
+            found_new = 0
 
-        all_stations = {}
-        all_prices = {}
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = {
+                    executor.submit(self._fetch_one, lat, lon, fuel_type_id): (lat, lon)
+                    for lat, lon in grid
+                }
 
-        # Шаги 2-5: регионы → провинции → города → АЗС
-        for region in regions:
-            region_id = region.get("id")
-            provinces = self._get_provinces(region_id)
+                done = 0
+                for future in as_completed(futures):
+                    done += 1
+                    if done % 500 == 0:
+                        print(f"[IT]   {done}/{len(grid)} точек обработано...")
 
-            for province in provinces:
-                pcode = province.get("id")
-                towns = self._get_towns(pcode)
-                print(f"[IT] Провинция {pcode}: {len(towns)} городов")
+                    for st in future.result():
+                        sid = str(st.get("id", ""))
+                        if not sid:
+                            continue
 
-                for fuel_type_id, fuel_type in self.fuel_types.items():
+                        if sid not in all_stations:
+                            all_stations[sid] = st
+                            found_new += 1
 
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = {
-                            executor.submit(
-                                self._search_by_town,
-                                town.get("id"), pcode, fuel_type_id, fuel_type
-                            ): town
-                            for town in towns if town.get("id")
-                        }
-
-                        for future in as_completed(futures):
-                            stations, prices = future.result()
-
-                            for sid, st in stations.items():
-                                if sid not in all_stations:
-                                    all_stations[sid] = st
-
-                            for sid, price_dict in prices.items():
+                        for fuel in st.get("fuels", []):
+                            price = fuel.get("price")
+                            if price and float(price) > 0:
                                 if sid not in all_prices:
                                     all_prices[sid] = {}
-                                for ft, price in price_dict.items():
-                                    if ft not in all_prices[sid]:
-                                        all_prices[sid][ft] = price
-                                    else:
-                                        all_prices[sid][ft] = min(all_prices[sid][ft], price)
+                                if fuel_type not in all_prices[sid]:
+                                    all_prices[sid][fuel_type] = float(price)
+                                else:
+                                    all_prices[sid][fuel_type] = min(
+                                        all_prices[sid][fuel_type], float(price)
+                                    )
+
+            print(f"[IT]   Новых АЗС: {found_new}")
 
         print(f"[IT] Всего уникальных АЗС: {len(all_stations)}")
 
-        # Шаг 6: сохраняем в базу данных
         for sid, st_data in all_stations.items():
             try:
                 self._save_station(sid, st_data, all_prices.get(sid, {}))
             except Exception as e:
-                print(f"[IT] Ошибка при сохранении станции {sid}: {e}")
+                print(f"[IT] Ошибка станции {sid}: {e}")
 
         print(f"[IT] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
