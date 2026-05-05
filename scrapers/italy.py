@@ -13,11 +13,12 @@ class ItalyScraper(BaseScraper):
 
         self.api_base = "https://carburanti.mise.gov.it/ospzApi"
 
-        self.fuel_types = {
-            "1": "gasoline_95",
-            "2": "diesel",
-            "3": "cng",
-            "4": "lpg",
+        # Соответствие fuelId из API → наше внутреннее название
+        self.fuel_map = {
+            1: "gasoline_95",
+            2: "diesel",
+            3: "cng",
+            4: "lpg",
         }
 
         # Радиус 5 км — не упираемся в лимит 343 АЗС на запрос
@@ -33,29 +34,31 @@ class ItalyScraper(BaseScraper):
     def _generate_grid(self):
         """
         Сетка точек по территории Италии.
-        Шаг 0.08 градуса ≈ 8 км — чуть меньше диаметра круга радиусом 5 км,
-        поэтому круги перекрываются и не оставляют пробелов.
+        0.09 градуса ≈ 10 км. Радиус 5 км — круги касаются краями, пробелов нет.
         Италия: lat 36.6–47.1, lon 6.6–18.5
-        Итого примерно 4700 точек.
+        Итого ~1800 точек — быстро и полно.
         """
         points = []
         lat = 36.6
         while lat <= 47.1:
             lon = 6.6
             while lon <= 18.5:
-                points.append((round(lat, 3), round(lon, 3)))
-                lon = round(lon + 0.08, 3)
-            lat = round(lat + 0.08, 3)
+                points.append((round(lat, 2), round(lon, 2)))
+                lon = round(lon + 0.09, 2)
+            lat = round(lat + 0.09, 2)
         return points
 
-    def _fetch_one(self, lat, lon, fuel_type_id):
+    def _fetch_one(self, lat, lon):
         """
-        Один POST-запрос — возвращает список АЗС вокруг точки (lat, lon).
+        Один POST-запрос с fuelType=1 (бензин).
+        АЗС в ответе содержат ВСЕ виды топлива в поле fuels —
+        поэтому не нужно повторять запрос для каждого топлива отдельно.
+        Возвращает список АЗС.
         """
         url = f"{self.api_base}/search/zone"
         body = {
             "points": [{"lat": lat, "lng": lon}],
-            "fuelType": fuel_type_id,
+            "fuelType": "1",
             "radius": self.radius
         }
         try:
@@ -75,44 +78,44 @@ class ItalyScraper(BaseScraper):
         all_stations = {}  # sid -> данные станции
         all_prices = {}    # sid -> {fuel_type -> min_price}
 
-        for fuel_type_id, fuel_type in self.fuel_types.items():
-            print(f"[IT] Топливо: {fuel_type}...")
-            found_new = 0
+        # Один проход по всей сетке — все виды топлива берём из каждого ответа
+        with ThreadPoolExecutor(max_workers=30) as executor:
+            futures = {
+                executor.submit(self._fetch_one, lat, lon): (lat, lon)
+                for lat, lon in grid
+            }
 
-            with ThreadPoolExecutor(max_workers=20) as executor:
-                futures = {
-                    executor.submit(self._fetch_one, lat, lon, fuel_type_id): (lat, lon)
-                    for lat, lon in grid
-                }
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                if done % 200 == 0:
+                    print(f"[IT]   {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
 
-                done = 0
-                for future in as_completed(futures):
-                    done += 1
-                    if done % 500 == 0:
-                        print(f"[IT]   {done}/{len(grid)} точек обработано...")
+                for st in future.result():
+                    sid = str(st.get("id", ""))
+                    if not sid:
+                        continue
 
-                    for st in future.result():
-                        sid = str(st.get("id", ""))
-                        if not sid:
-                            continue
+                    # Сохраняем данные станции
+                    if sid not in all_stations:
+                        all_stations[sid] = st
 
-                        if sid not in all_stations:
-                            all_stations[sid] = st
-                            found_new += 1
-
-                        for fuel in st.get("fuels", []):
-                            price = fuel.get("price")
-                            if price and float(price) > 0:
-                                if sid not in all_prices:
-                                    all_prices[sid] = {}
-                                if fuel_type not in all_prices[sid]:
-                                    all_prices[sid][fuel_type] = float(price)
-                                else:
-                                    all_prices[sid][fuel_type] = min(
-                                        all_prices[sid][fuel_type], float(price)
-                                    )
-
-            print(f"[IT]   Новых АЗС: {found_new}")
+                    # Берём все цены из поля fuels
+                    for fuel in st.get("fuels", []):
+                        fuel_id = fuel.get("fuelId")
+                        fuel_type = self.fuel_map.get(fuel_id)
+                        if not fuel_type:
+                            continue  # пропускаем неизвестные виды топлива
+                        price = fuel.get("price")
+                        if price and float(price) > 0:
+                            if sid not in all_prices:
+                                all_prices[sid] = {}
+                            if fuel_type not in all_prices[sid]:
+                                all_prices[sid][fuel_type] = float(price)
+                            else:
+                                all_prices[sid][fuel_type] = min(
+                                    all_prices[sid][fuel_type], float(price)
+                                )
 
         print(f"[IT] Всего уникальных АЗС: {len(all_stations)}")
 
