@@ -22,7 +22,7 @@ class ItalyScraper(BaseScraper):
         }
 
         # Радиус 5 км — не упираемся в лимит 343 АЗС на запрос
-        self.radius = 5
+        self.radius = 15
 
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -32,21 +32,20 @@ class ItalyScraper(BaseScraper):
         }
 
     def _generate_grid(self):
-        """
-        Сетка точек по территории Италии.
-        0.09 градуса ≈ 10 км. Радиус 5 км — круги касаются краями, пробелов нет.
-        Италия: lat 36.6–47.1, lon 6.6–18.5
-        Итого ~1800 точек — быстро и полно.
-        """
-        points = []
-        lat = 36.6
-        while lat <= 47.1:
-            lon = 6.6
-            while lon <= 18.5:
-                points.append((round(lat, 2), round(lon, 2)))
-                lon = round(lon + 0.09, 2)
-            lat = round(lat + 0.09, 2)
-        return points
+    """
+    Шаг 0.25 градуса ≈ 25 км. Радиус 15 км — круги перекрываются на 5 км.
+    Италия: lat 36.6–47.1, lon 6.6–18.5
+    Итого ~1600 точек.
+    """
+    points = []
+    lat = 36.6
+    while lat <= 47.1:
+        lon = 6.6
+        while lon <= 18.5:
+            points.append((round(lat, 2), round(lon, 2)))
+            lon = round(lon + 0.25, 2)
+        lat = round(lat + 0.25, 2)
+    return points
 
     def _fetch_one(self, lat, lon):
         """
@@ -71,21 +70,6 @@ class ItalyScraper(BaseScraper):
 
     def scrape(self):
         print("[IT] Начинаем сбор данных Италии...")
-        
-        # ВРЕМЕННЫЙ ТЕСТ
-        import json
-        url = f"{self.api_base}/search/zone"
-        grid = self._generate_grid()
-        print(f"[DEBUG] Всего точек в сетке: {len(grid)}")
-        # Проверяем первые 100 точек — сколько из них дают хоть 1 АЗС
-        hits = 0
-        for lat, lon in grid[:100]:
-            r = requests.post(url, json={"points": [{"lat": lat, "lng": lon}], "fuelType": "1", "radius": 5}, headers=self.headers, timeout=15)
-            count = len(r.json().get("results", []))
-            if count > 0:
-                hits += 1
-        print(f"[DEBUG] Из первых 100 точек дали АЗС: {hits}")
-        return
 
         grid = self._generate_grid()
         print(f"[IT] Сетка: {len(grid)} точек, радиус {self.radius} км")
