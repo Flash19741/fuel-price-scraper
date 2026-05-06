@@ -71,6 +71,21 @@ class ItalyScraper(BaseScraper):
 
     def scrape(self):
         print("[IT] Начинаем сбор данных Италии...")
+        
+        # ВРЕМЕННЫЙ ТЕСТ
+        import json
+        url = f"{self.api_base}/search/zone"
+        lat, lon = 45.464, 9.188  # Милан
+        ids_total = set()
+        for ft in ["1", "2", "3", "4"]:
+            r = requests.post(url, json={"points": [{"lat": lat, "lng": lon}], "fuelType": ft, "radius": 5}, headers=self.headers, timeout=15)
+            results = r.json().get("results", [])
+            ids = set(str(s["id"]) for s in results)
+            new = ids - ids_total
+            ids_total |= ids
+            print(f"[DEBUG] fuelType={ft}: {len(results)} АЗС, новых (не было в предыдущих): {len(new)}")
+        print(f"[DEBUG] Итого уникальных при всех 4 запросах: {len(ids_total)}")
+        return
 
         grid = self._generate_grid()
         print(f"[IT] Сетка: {len(grid)} точек, радиус {self.radius} км")
