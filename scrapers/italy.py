@@ -29,23 +29,23 @@ class ItalyScraper(BaseScraper):
             "Accept": "application/json",
             "Referer": "https://carburanti.mise.gov.it/",
             "Origin": "https://carburanti.mise.gov.it",
-        }
+       }
 
     def _generate_grid(self):
-    """
-    Шаг 0.25 градуса ≈ 25 км. Радиус 15 км — круги перекрываются на 5 км.
-    Италия: lat 36.6–47.1, lon 6.6–18.5
-    Итого ~1600 точек.
-    """
-    points = []
-    lat = 36.6
-    while lat <= 47.1:
-        lon = 6.6
-        while lon <= 18.5:
-            points.append((round(lat, 2), round(lon, 2)))
-            lon = round(lon + 0.25, 2)
-        lat = round(lat + 0.25, 2)
-    return points
+        """
+        Шаг 0.25 градуса ≈ 25 км. Радиус 15 км — круги перекрываются на 5 км.
+        Италия: lat 36.6–47.1, lon 6.6–18.5
+        Итого ~1600 точек.
+        """
+        points = []
+        lat = 36.6
+        while lat <= 47.1:
+            lon = 6.6
+            while lon <= 18.5:
+                points.append((round(lat, 2), round(lon, 2)))
+                lon = round(lon + 0.25, 2)
+            lat = round(lat + 0.25, 2)
+        return points
 
     def _fetch_one(self, lat, lon):
         """
