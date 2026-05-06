@@ -75,16 +75,16 @@ class ItalyScraper(BaseScraper):
         # ВРЕМЕННЫЙ ТЕСТ
         import json
         url = f"{self.api_base}/search/zone"
-        lat, lon = 45.464, 9.188  # Милан
-        ids_total = set()
-        for ft in ["1", "2", "3", "4"]:
-            r = requests.post(url, json={"points": [{"lat": lat, "lng": lon}], "fuelType": ft, "radius": 5}, headers=self.headers, timeout=15)
-            results = r.json().get("results", [])
-            ids = set(str(s["id"]) for s in results)
-            new = ids - ids_total
-            ids_total |= ids
-            print(f"[DEBUG] fuelType={ft}: {len(results)} АЗС, новых (не было в предыдущих): {len(new)}")
-        print(f"[DEBUG] Итого уникальных при всех 4 запросах: {len(ids_total)}")
+        grid = self._generate_grid()
+        print(f"[DEBUG] Всего точек в сетке: {len(grid)}")
+        # Проверяем первые 100 точек — сколько из них дают хоть 1 АЗС
+        hits = 0
+        for lat, lon in grid[:100]:
+            r = requests.post(url, json={"points": [{"lat": lat, "lng": lon}], "fuelType": "1", "radius": 5}, headers=self.headers, timeout=15)
+            count = len(r.json().get("results", []))
+            if count > 0:
+                hits += 1
+        print(f"[DEBUG] Из первых 100 точек дали АЗС: {hits}")
         return
 
         grid = self._generate_grid()
