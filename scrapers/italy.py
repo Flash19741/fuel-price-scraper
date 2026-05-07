@@ -1,4 +1,5 @@
 import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .base import BaseScraper
 from db.supabase_client import upsert_station, upsert_price
@@ -61,6 +62,7 @@ class ItalyScraper(BaseScraper):
             "radius": self.radius
         }
         try:
+            time.sleep(0.5)
             r = requests.post(url, json=body, headers=self.headers, timeout=15)
             if r.status_code == 200:
                 return r.json().get("results", [])
@@ -78,7 +80,7 @@ class ItalyScraper(BaseScraper):
         all_prices = {}    # sid -> {fuel_type -> min_price}
 
         # Один проход по всей сетке — все виды топлива берём из каждого ответа
-        with ThreadPoolExecutor(max_workers=30) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {
                 executor.submit(self._fetch_one, lat, lon): (lat, lon)
                 for lat, lon in grid
