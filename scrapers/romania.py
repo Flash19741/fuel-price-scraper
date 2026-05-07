@@ -27,22 +27,19 @@ class RomaniaScraper(BaseScraper):
         }
         self.buffer = 5000
 
-    # Шаг 0.03° ≈ 3.3 км — перекрывает радиус покрытия с небольшим overlap
-    # Румыния примерно 5.65° × 9.48° → ~188 × 316 = ~59 000 точек
-    # Это много. Но запросы быстрые — при 100 воркерах ~10 минут
-
     def _generate_grid(self):
         points = []
         lat = 43.62
         while lat <= 48.27:
             lon = 20.26
             while lon <= 29.74:
-                points.append((round(lat, 4), round(lon, 4)))
-                lon = round(lon + 0.03, 4)
-            lat = round(lat + 0.03, 4)
+                points.append((round(lat, 3), round(lon, 3)))
+                lon = round(lon + 0.06, 3)
+            lat = round(lat + 0.06, 3)
         return points
 
-    def _fetch_one(self, lat, lon):
+    def _fetch_one(self, lat, lon, cat_id):
+        """Один запрос к API — возвращает (stations, prices) или ([], [])."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/xml, text/xml, */*",
@@ -51,62 +48,78 @@ class RomaniaScraper(BaseScraper):
         params = {
             "lat": lat,
             "lon": lon,
-            "buffer": 5000,
-            "CSVGasCatalogProductIds": ",".join(self.fuel_categories.keys()),
+            "buffer": self.buffer,
+            "CSVGasCatalogProductIds": cat_id,
             "OrderBy": "dist"
         }
         try:
-            r = requests.get(self.base_url, params=params, headers=headers, timeout=20)
+            r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
             if r.status_code != 200:
                 return [], []
             root = etree.fromstring(r.content)
-            return (
-                root.findall(f".//{{{NS}}}GasStation"),
-                root.findall(f".//{{{NS}}}GasProduct"),
-            )
+            stations = root.findall(f".//{{{NS}}}GasStation")
+            products = root.findall(f".//{{{NS}}}GasProduct")
+            return stations, products
         except Exception:
             return [], []
 
     def scrape(self):
         print(f"[RO] Начинаем сбор данных Румынии...")
+
+        # ВРЕМЕННЫЙ ТЕСТ
+
+         # ВРЕМЕННЫЙ ТЕСТ(конец)
+
+        
         grid = self._generate_grid()
         print(f"[RO] Сетка: {len(grid)} точек")
 
-        all_stations: dict = {}
-        all_prices: dict = {}
+        all_stations = {}
+        all_prices = {}
 
-        with ThreadPoolExecutor(max_workers=100) as executor:
-            futures = {
-                executor.submit(self._fetch_one, lat, lon): (lat, lon)
-                for lat, lon in grid
-            }
-            done = 0
-            for future in as_completed(futures):
-                done += 1
-                if done % 5000 == 0:
-                    print(f"[RO]  {done}/{len(grid)}, станций: {len(all_stations)}")
+        for cat_id, fuel_type in self.fuel_categories.items():
+            print(f"[RO] Категория {fuel_type}...")
+            found_in_cat = 0
 
-                stations_els, products_els = future.result()
+            # Параллельные запросы — 20 потоков одновременно
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = {
+                    executor.submit(self._fetch_one, lat, lon, cat_id): (lat, lon)
+                    for lat, lon in grid
+                }
 
-                for st in stations_els:
-                    sid = xt(st, "Id")
-                    if sid and sid not in all_stations:
-                        all_stations[sid] = st
+                done = 0
+                for future in as_completed(futures):
+                    done += 1
+                    if done % 1000 == 0:
+                        print(f"[RO]   {done}/{len(grid)} запросов...")
 
-                for pr in products_els:
-                    sid = xt(pr, "Stationid")
-                    cat_id = xt(pr, "GasCatalogProductId")
-                    price_str = xt(pr, "Price")
-                    fuel_type = self.fuel_categories.get(cat_id)
-                    if not (sid and fuel_type and price_str):
-                        continue
-                    try:
-                        price = float(price_str)
-                        sp = all_prices.setdefault(sid, {})
-                        if fuel_type not in sp or price < sp[fuel_type]:
-                            sp[fuel_type] = price
-                    except ValueError:
-                        pass
+                    stations_els, products_els = future.result()
+
+                    for st in stations_els:
+                        sid = xt(st, "Id")
+                        if sid and sid not in all_stations:
+                            all_stations[sid] = st
+                            found_in_cat += 1
+
+                    for pr in products_els:
+                        sid = xt(pr, "Stationid")
+                        price_str = xt(pr, "Price")
+                        if sid and price_str:
+                            try:
+                                price = float(price_str)
+                                if sid not in all_prices:
+                                    all_prices[sid] = {}
+                                if fuel_type not in all_prices[sid]:
+                                    all_prices[sid][fuel_type] = price
+                                else:
+                                    all_prices[sid][fuel_type] = min(
+                                        all_prices[sid][fuel_type], price
+                                    )
+                            except ValueError:
+                                pass
+
+            print(f"[RO]   Новых АЗС в категории: {found_in_cat}")
 
         print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
 
