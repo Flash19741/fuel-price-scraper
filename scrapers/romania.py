@@ -28,8 +28,8 @@ class RomaniaScraper(BaseScraper):
         self.buffer = 5000
 
     # Шаг 0.03° ≈ 3.3 км — перекрывает радиус покрытия с небольшим overlap
-# Румыния примерно 5.65° × 9.48° → ~188 × 316 = ~59 000 точек
-# Это много. Но запросы быстрые — при 100 воркерах ~10 минут
+    # Румыния примерно 5.65° × 9.48° → ~188 × 316 = ~59 000 точек
+    # Это много. Но запросы быстрые — при 100 воркерах ~10 минут
 
     def _generate_grid(self):
         points = []
@@ -43,82 +43,80 @@ class RomaniaScraper(BaseScraper):
         return points
 
     def _fetch_one(self, lat, lon):
-		 headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/xml, text/xml, */*",
-        "Referer": "https://monitorulpreturilor.info/",
-    }
-		params = {
-			"lat": lat,
-			"lon": lon,
-			"buffer": 5000,
-			"CSVGasCatalogProductIds": ",".join(self.fuel_categories.keys()),
-			"OrderBy": "dist"
-		}
-		try:
-			r = requests.get(self.base_url, params=params, headers=headers, timeout=20)
-			if r.status_code != 200:
-				return [], []
-			root = etree.fromstring(r.content)
-			return (
-				root.findall(f".//{{{NS}}}GasStation"),
-				root.findall(f".//{{{NS}}}GasProduct"),
-			)
-		except Exception:
-			return [], []
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/xml, text/xml, */*",
+            "Referer": "https://monitorulpreturilor.info/",
+        }
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "buffer": 5000,
+            "CSVGasCatalogProductIds": ",".join(self.fuel_categories.keys()),
+            "OrderBy": "dist"
+        }
+        try:
+            r = requests.get(self.base_url, params=params, headers=headers, timeout=20)
+            if r.status_code != 200:
+                return [], []
+            root = etree.fromstring(r.content)
+            return (
+                root.findall(f".//{{{NS}}}GasStation"),
+                root.findall(f".//{{{NS}}}GasProduct"),
+            )
+        except Exception:
+            return [], []
 
-	def scrape(self):
-		print(f"[RO] Начинаем сбор данных Румынии...")
-		grid = self._generate_grid()
-		print(f"[RO] Сетка: {len(grid)} точек")
+    def scrape(self):
+        print(f"[RO] Начинаем сбор данных Румынии...")
+        grid = self._generate_grid()
+        print(f"[RO] Сетка: {len(grid)} точек")
 
-		all_stations: dict = {}
-		all_prices: dict = {}
+        all_stations: dict = {}
+        all_prices: dict = {}
 
-		with ThreadPoolExecutor(max_workers=100) as executor:
-			futures = {
-				executor.submit(self._fetch_one, lat, lon): (lat, lon)
-				for lat, lon in grid
-			}
-			done = 0
-			for future in as_completed(futures):
-				done += 1
-				if done % 5000 == 0:
-					print(f"[RO]  {done}/{len(grid)}, станций: {len(all_stations)}")
+        with ThreadPoolExecutor(max_workers=100) as executor:
+            futures = {
+                executor.submit(self._fetch_one, lat, lon): (lat, lon)
+                for lat, lon in grid
+            }
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                if done % 5000 == 0:
+                    print(f"[RO]  {done}/{len(grid)}, станций: {len(all_stations)}")
 
-				stations_els, products_els = future.result()
+                stations_els, products_els = future.result()
 
-				for st in stations_els:
-					sid = xt(st, "Id")
-					if sid and sid not in all_stations:
-						all_stations[sid] = st
+                for st in stations_els:
+                    sid = xt(st, "Id")
+                    if sid and sid not in all_stations:
+                        all_stations[sid] = st
 
-				for pr in products_els:
-					sid = xt(pr, "Stationid")
-					cat_id = xt(pr, "GasCatalogProductId")
-					price_str = xt(pr, "Price")
-					fuel_type = self.fuel_categories.get(cat_id)
-					if not (sid and fuel_type and price_str):
-						continue
-					try:
-						price = float(price_str)
-						sp = all_prices.setdefault(sid, {})
-						if fuel_type not in sp or price < sp[fuel_type]:
-							sp[fuel_type] = price
-					except ValueError:
-						pass
+                for pr in products_els:
+                    sid = xt(pr, "Stationid")
+                    cat_id = xt(pr, "GasCatalogProductId")
+                    price_str = xt(pr, "Price")
+                    fuel_type = self.fuel_categories.get(cat_id)
+                    if not (sid and fuel_type and price_str):
+                        continue
+                    try:
+                        price = float(price_str)
+                        sp = all_prices.setdefault(sid, {})
+                        if fuel_type not in sp or price < sp[fuel_type]:
+                            sp[fuel_type] = price
+                    except ValueError:
+                        pass
 
-		print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
+        print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
 
-		for sid, st_el in all_stations.items():
-			try:
-				self._save_station(sid, st_el, all_prices.get(sid, {}))
-			except Exception as e:
-				print(f"[RO] Ошибка станции {sid}: {e}")
+        for sid, st_el in all_stations.items():
+            try:
+                self._save_station(sid, st_el, all_prices.get(sid, {}))
+            except Exception as e:
+                print(f"[RO] Ошибка станции {sid}: {e}")
 
-		print(f"[RO] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
-
-
+        print(f"[RO] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
     def _save_station(self, sid, st_el, prices):
         network_el = st_el.find(f"{{{NS}}}Network")
