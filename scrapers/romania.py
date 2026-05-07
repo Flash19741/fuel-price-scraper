@@ -68,41 +68,41 @@ class RomaniaScraper(BaseScraper):
 
         # ВРЕМЕННЫЙ ТЕСТ
 
-        def scrape(self):
-            lat, lon = 44.43, 26.10  # Бухарест
+        
+        lat, lon = 44.43, 26.10  # Бухарест
 
-            # 1. Проверяем, что вообще возвращает API для одной точки
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/xml, text/xml, */*",
-                "Referer": "https://monitorulpreturilor.info/",
-            }
-            params = {
-                "lat": lat,
-                "lon": lon,
-                "buffer": 5000,
-                "CSVGasCatalogProductIds": "11",
-                "OrderBy": "dist"
-            }
-            r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
-            print(f"[DEBUG] Status: {r.status_code}")
-            print(f"[DEBUG] Response (first 2000 chars):\n{r.text[:2000]}")
+        # 1. Проверяем, что вообще возвращает API для одной точки
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/xml, text/xml, */*",
+            "Referer": "https://monitorulpreturilor.info/", 
+        }
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "buffer": 5000,
+            "CSVGasCatalogProductIds": "11",
+            "OrderBy": "dist"
+        }
+        r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
+        print(f"[DEBUG] Status: {r.status_code}")
+        print(f"[DEBUG] Response (first 2000 chars):\n{r.text[:2000]}")
 
-            # 2. Смотрим координаты первых 5 станций — насколько далеко они от точки?
-            root = etree.fromstring(r.content)
-            stations = root.findall(f".//{{{NS}}}GasStation")
-            print(f"\n[DEBUG] Всего станций: {len(stations)}")
-            for st in stations[:5]:
-                addr_el = st.find(f"{{{NS}}}Addr")
-                loc_el = addr_el.find(f"{{{NS}}}Location") if addr_el is not None else None
-                st_lat = xt(loc_el, "Lat") if loc_el is not None else "?"
-                st_lon = xt(loc_el, "Lon") if loc_el is not None else "?"
-                name = xt(st, "Name")
-                sid = xt(st, "Id")
-                print(f"  {sid} | {name} | lat={st_lat} lon={st_lon}")
+         # 2. Смотрим координаты первых 5 станций — насколько далеко они от точки?
+        root = etree.fromstring(r.content)
+        stations = root.findall(f".//{{{NS}}}GasStation")
+        print(f"\n[DEBUG] Всего станций: {len(stations)}")
+        for st in stations[:5]:
+            addr_el = st.find(f"{{{NS}}}Addr")
+            loc_el = addr_el.find(f"{{{NS}}}Location") if addr_el is not None else None
+            st_lat = xt(loc_el, "Lat") if loc_el is not None else "?"
+            st_lon = xt(loc_el, "Lon") if loc_el is not None else "?"
+            name = xt(st, "Name")
+            sid = xt(st, "Id")
+            print(f"  {sid} | {name} | lat={st_lat} lon={st_lon}")
 
-            return
-            # ВРЕМЕННЫЙ ТЕСТ(конец)
+        return
+         # ВРЕМЕННЫЙ ТЕСТ(конец)
 
         
         grid = self._generate_grid()
