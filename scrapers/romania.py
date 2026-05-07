@@ -43,11 +43,11 @@ class RomaniaScraper(BaseScraper):
         return points
 
     def _fetch_one(self, lat, lon):
-		headers = {
-			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-			"Accept": "application/xml, text/xml, */*",
-			"Referer": "https://monitorulpreturilor.info/",
-		}
+		 headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/xml, text/xml, */*",
+        "Referer": "https://monitorulpreturilor.info/",
+    }
 		params = {
 			"lat": lat,
 			"lon": lon,
