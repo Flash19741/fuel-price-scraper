@@ -67,27 +67,12 @@ class RomaniaScraper(BaseScraper):
         print(f"[RO] Начинаем сбор данных Румынии...")
 
         # ВРЕМЕННЫЙ ТЕСТ
-        import json
-        # Бухарест — проверяем все категории для одной точки
         lat, lon = 44.43, 26.10
-        ids_per_cat = {}
-        for cat_id, fuel_type in self.fuel_categories.items():
-            stations, products = self._fetch_one(lat, lon, cat_id)
-            ids = set(xt(s, "Id") for s in stations)
-            ids_per_cat[fuel_type] = ids
-            print(f"[DEBUG] cat={fuel_type}: {len(stations)} АЗС")
-
-            # Проверяем пересечение — одинаковые ли АЗС возвращаются
-        all_ids = set()
-        for ids in ids_per_cat.values():
-            all_ids |= ids
-        base = ids_per_cat.get("gasoline_95", set())
-        for ft, ids in ids_per_cat.items():
-            diff = ids - base
-            print(f"[DEBUG] {ft}: уникальных (нет в gasoline_95): {len(diff)}")
-        print(f"[DEBUG] Всего уникальных АЗС по всем категориям: {len(all_ids)}")
+        for buf in [5000, 10000, 20000, 50000]:
+            self.buffer = buf
+            stations, _ = self._fetch_one(lat, lon, "11")
+            print(f"[DEBUG] buffer={buf}м: {len(stations)} АЗС")
         return
-        
         
         grid = self._generate_grid()
         print(f"[RO] Сетка: {len(grid)} точек")
