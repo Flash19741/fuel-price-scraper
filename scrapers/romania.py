@@ -65,51 +65,30 @@ class RomaniaScraper(BaseScraper):
 
     def scrape(self):
         print(f"[RO] Начинаем сбор данных Румынии...")
-
-        # ВРЕМЕННЫЙ ТЕСТ
-        # ВРЕМЕННЫЙ ТЕСТ
-        lat, lon = 44.43, 26.10
-        stations, products = self._fetch_one(lat, lon, "11")
-        fuel_types_in_response = set()
-        for pr in products:
-            fuel_types_in_response.add(xt(pr, "GasCatalogProductId"))
-        print(f"[DEBUG] Виды топлива в ответе на запрос cat=11: {fuel_types_in_response}")
-        print(f"[DEBUG] Пример продукта: {etree.tostring(products[0], pretty_print=True).decode() if products else 'нет'}")
-        return
-
-        # ВРЕМЕННЫЙ ТЕСТ(конец)
-
-        
         grid = self._generate_grid()
         print(f"[RO] Сетка: {len(grid)} точек")
 
         all_stations = {}
         all_prices = {}
 
-        for cat_id, fuel_type in self.fuel_categories.items():
-            print(f"[RO] Категория {fuel_type}...")
-            found_in_cat = 0
+        def fetch_point(lat, lon):
+            """Для одной точки запрашиваем все категории топлива параллельно."""
+            point_stations = {}
+            point_prices = {}
 
-            # Параллельные запросы — 20 потоков одновременно
-            with ThreadPoolExecutor(max_workers=20) as executor:
-                futures = {
-                    executor.submit(self._fetch_one, lat, lon, cat_id): (lat, lon)
-                    for lat, lon in grid
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futs = {
+                    ex.submit(self._fetch_one, lat, lon, cat_id): (cat_id, fuel_type)
+                    for cat_id, fuel_type in self.fuel_categories.items()
                 }
-
-                done = 0
-                for future in as_completed(futures):
-                    done += 1
-                    if done % 1000 == 0:
-                        print(f"[RO]   {done}/{len(grid)} запросов...")
-
-                    stations_els, products_els = future.result()
+                for f in as_completed(futs):
+                    cat_id, fuel_type = futs[f]
+                    stations_els, products_els = f.result()
 
                     for st in stations_els:
                         sid = xt(st, "Id")
-                        if sid and sid not in all_stations:
-                            all_stations[sid] = st
-                            found_in_cat += 1
+                        if sid and sid not in point_stations:
+                            point_stations[sid] = st
 
                     for pr in products_els:
                         sid = xt(pr, "Stationid")
@@ -117,18 +96,48 @@ class RomaniaScraper(BaseScraper):
                         if sid and price_str:
                             try:
                                 price = float(price_str)
-                                if sid not in all_prices:
-                                    all_prices[sid] = {}
-                                if fuel_type not in all_prices[sid]:
-                                    all_prices[sid][fuel_type] = price
+                                if sid not in point_prices:
+                                    point_prices[sid] = {}
+                                if fuel_type not in point_prices[sid]:
+                                    point_prices[sid][fuel_type] = price
                                 else:
-                                    all_prices[sid][fuel_type] = min(
-                                        all_prices[sid][fuel_type], price
+                                    point_prices[sid][fuel_type] = min(
+                                        point_prices[sid][fuel_type], price
                                     )
                             except ValueError:
                                 pass
 
-            print(f"[RO]   Новых АЗС в категории: {found_in_cat}")
+            return point_stations, point_prices
+
+        # Параллельно обрабатываем все точки сетки
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {
+                executor.submit(fetch_point, lat, lon): (lat, lon)
+                for lat, lon in grid
+            }
+
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                if done % 1000 == 0:
+                    print(f"[RO]   {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
+
+                point_stations, point_prices = future.result()
+
+                for sid, st in point_stations.items():
+                    if sid not in all_stations:
+                        all_stations[sid] = st
+
+                for sid, price_dict in point_prices.items():
+                    if sid not in all_prices:
+                        all_prices[sid] = {}
+                    for fuel_type, price in price_dict.items():
+                        if fuel_type not in all_prices[sid]:
+                            all_prices[sid][fuel_type] = price
+                        else:
+                            all_prices[sid][fuel_type] = min(
+                                all_prices[sid][fuel_type], price
+                            )
 
         print(f"[RO] Всего уникальных АЗС: {len(all_stations)}")
 
