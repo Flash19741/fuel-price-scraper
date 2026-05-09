@@ -67,8 +67,17 @@ class RomaniaScraper(BaseScraper):
         print(f"[RO] Начинаем сбор данных Румынии...")
 
         # ВРЕМЕННЫЙ ТЕСТ
+        # ВРЕМЕННЫЙ ТЕСТ
+        lat, lon = 44.43, 26.10
+        stations, products = self._fetch_one(lat, lon, "11")
+        fuel_types_in_response = set()
+        for pr in products:
+            fuel_types_in_response.add(xt(pr, "GasCatalogProductId"))
+        print(f"[DEBUG] Виды топлива в ответе на запрос cat=11: {fuel_types_in_response}")
+        print(f"[DEBUG] Пример продукта: {etree.tostring(products[0], pretty_print=True).decode() if products else 'нет'}")
+        return
 
-         # ВРЕМЕННЫЙ ТЕСТ(конец)
+        # ВРЕМЕННЫЙ ТЕСТ(конец)
 
         
         grid = self._generate_grid()
