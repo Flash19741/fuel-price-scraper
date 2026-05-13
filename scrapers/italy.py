@@ -11,7 +11,6 @@ class ItalyScraper(BaseScraper):
         super().__init__(client)
         self.country = "IT"
         self.currency = "EUR"
-
         self.api_base = "https://carburanti.mise.gov.it/ospzApi"
 
         # Соответствие fuelId из API → наше внутреннее название
@@ -22,7 +21,7 @@ class ItalyScraper(BaseScraper):
             4: "lpg",
         }
 
-        # Радиус 5 км — не упираемся в лимит 343 АЗС на запрос
+        # Радиус 15 км — перекрытие между точками сетки ~5 км
         self.radius = 15
 
         self.headers = {
@@ -30,7 +29,7 @@ class ItalyScraper(BaseScraper):
             "Accept": "application/json",
             "Referer": "https://carburanti.mise.gov.it/",
             "Origin": "https://carburanti.mise.gov.it",
-       }
+        }
 
     def _generate_grid(self):
         """
@@ -50,10 +49,9 @@ class ItalyScraper(BaseScraper):
 
     def _fetch_one(self, lat, lon):
         """
-        Один POST-запрос с fuelType=1 (бензин).
-        АЗС в ответе содержат ВСЕ виды топлива в поле fuels —
-        поэтому не нужно повторять запрос для каждого топлива отдельно.
-        Возвращает список АЗС.
+        Один POST-запрос к API Италии.
+        Возвращает список АЗС или [] при ошибке.
+        При ошибке 429 (слишком много запросов) — делает паузу и повторяет.
         """
         url = f"{self.api_base}/search/zone"
         body = {
@@ -61,25 +59,35 @@ class ItalyScraper(BaseScraper):
             "fuelType": "1",
             "radius": self.radius
         }
-        try:
-            time.sleep(0.5)
-            r = requests.post(url, json=body, headers=self.headers, timeout=15)
-            if r.status_code == 200:
-                return r.json().get("results", [])
-        except Exception:
-            pass
+
+        for attempt in range(3):
+            try:
+                r = requests.post(url, json=body, headers=self.headers, timeout=15)
+
+                if r.status_code == 429:
+                    # Сервер говорит "слишком много запросов" — ждём и повторяем
+                    wait = 2 ** attempt  # 1, 2, 4 сек
+                    print(f"[IT] Лимит запросов (429), ждём {wait}с...")
+                    time.sleep(wait)
+                    continue
+
+                if r.status_code == 200:
+                    return r.json().get("results", [])
+
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+
         return []
 
     def scrape(self):
         print("[IT] Начинаем сбор данных Италии...")
-
         grid = self._generate_grid()
         print(f"[IT] Сетка: {len(grid)} точек, радиус {self.radius} км")
 
-        all_stations = {}  # sid -> данные станции
-        all_prices = {}    # sid -> {fuel_type -> min_price}
+        all_stations = {}   # source_id -> данные станции
+        all_prices = {}     # source_id -> {fuel_type -> min_price}
 
-        # Один проход по всей сетке — все виды топлива берём из каждого ответа
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {
                 executor.submit(self._fetch_one, lat, lon): (lat, lon)
@@ -90,14 +98,14 @@ class ItalyScraper(BaseScraper):
             for future in as_completed(futures):
                 done += 1
                 if done % 200 == 0:
-                    print(f"[IT]   {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
+                    print(f"[IT] {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
 
                 for st in future.result():
                     sid = str(st.get("id", ""))
                     if not sid:
                         continue
 
-                    # Сохраняем данные станции
+                    # Сохраняем данные станции (только при первой встрече)
                     if sid not in all_stations:
                         all_stations[sid] = st
 
@@ -106,11 +114,13 @@ class ItalyScraper(BaseScraper):
                         fuel_id = fuel.get("fuelId")
                         fuel_type = self.fuel_map.get(fuel_id)
                         if not fuel_type:
-                            continue  # пропускаем неизвестные виды топлива
+                            continue
+
                         price = fuel.get("price")
                         if price and float(price) > 0:
                             if sid not in all_prices:
                                 all_prices[sid] = {}
+                            # Сохраняем минимальную цену из дублирующихся ответов
                             if fuel_type not in all_prices[sid]:
                                 all_prices[sid][fuel_type] = float(price)
                             else:
@@ -134,12 +144,20 @@ class ItalyScraper(BaseScraper):
         lat = loc.get("lat")
         lon = loc.get("lng")
 
+        # Пытаемся получить город из разных возможных полей API
+        city = (
+            st.get("municipality") or
+            st.get("city") or
+            st.get("town") or
+            ""
+        )
+
         station = {
             "country": self.country,
             "brand": brand,
             "name": st.get("name", brand) or brand,
             "address": st.get("address", "") or "",
-            "city": "",
+            "city": city,
             "latitude": lat,
             "longitude": lon,
             "logo_url": self.get_brand_logo(brand),
