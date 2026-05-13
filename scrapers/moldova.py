@@ -13,6 +13,10 @@ class MoldovaScraper(BaseScraper):
         self.api_url = "https://api.ecarburanti.anre.md/public/"
 
     def epsg3857_to_wgs84(self, x: float, y: float):
+        """
+        Конвертирует координаты из формата EPSG:3857 (метры) в WGS84 (градусы).
+        API Молдовы отдаёт координаты в EPSG:3857, а нам нужны обычные lat/lon.
+        """
         lon = (x / 20037508.34) * 180.0
         lat = math.degrees(
             2 * math.atan(math.exp((y / 20037508.34) * math.pi)) - math.pi / 2
@@ -47,8 +51,10 @@ class MoldovaScraper(BaseScraper):
         if lat is None or lon is None:
             return
 
-        source_id = f"{lat}_{lon}"
-        print(f"[MD DEBUG] source_id={source_id}")
+        # Исправлено: используем числовой id из API если есть,
+        # иначе координаты как запасной вариант.
+        # Координаты могут незначительно меняться, что создаёт дубликаты.
+        source_id = str(data.get("id") or f"{lat}_{lon}")
 
         brand = data.get("station_name", "Unknown").strip()
         city = data.get("lev1", "") or data.get("bua", "") or ""
@@ -69,10 +75,12 @@ class MoldovaScraper(BaseScraper):
         station_id = upsert_station(self.client, station)
         self.stations_count += 1
 
+        # Маппинг полей API → наши названия видов топлива
         fuel_map = {
-            "diesel":   "diesel",
+            "diesel": "diesel",
             "gasoline": "gasoline_95",
-            "gpl":      "lpg",
+            "gasoline98": "gasoline_98",  # добавлено: 98-й бензин если есть в API
+            "gpl": "lpg",
         }
 
         for field, fuel_type in fuel_map.items():
