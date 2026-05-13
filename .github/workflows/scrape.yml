@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     # Жёсткий лимит: убиваем job если работает дольше 5 часов.
     # GitHub Actions позволяет максимум 6 часов — оставляем запас.
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     steps:
       - name: Checkout code
