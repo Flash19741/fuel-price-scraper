@@ -2,13 +2,22 @@ name: Fuel Price Scraper
 
 on:
   schedule:
+    # GitHub Actions использует UTC время.
+    # Молдова зимой = UTC+2, летом = UTC+3.
+    # Чтобы запускаться в ~10:00 и ~22:00 по Молдове:
+    # Зимой: 08:00 UTC = 10:00 MD  |  20:00 UTC = 22:00 MD
+    # Летом: 08:00 UTC = 11:00 MD  |  20:00 UTC = 23:00 MD (сдвиг на 1 час — приемлемо)
     - cron: '0 8 * * *'
     - cron: '0 20 * * *'
+  # Позволяет запустить вручную прямо с сайта GitHub (кнопка Run workflow)
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # Жёсткий лимит: убиваем job если работает дольше 5 часов.
+    # GitHub Actions позволяет максимум 6 часов — оставляем запас.
+    timeout-minutes: 300
 
     steps:
       - name: Checkout code
@@ -21,9 +30,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Check moldova file
-        run: cat scrapers/moldova.py
 
       - name: Run scrapers
         env:
