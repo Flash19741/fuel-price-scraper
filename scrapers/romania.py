@@ -7,9 +7,11 @@ from db.supabase_client import upsert_station, upsert_price
 
 NS = "http://schemas.datacontract.org/2004/07/pmonsvc.Models.Protos"
 
+
 def xt(el, tag):
     found = el.find(f"{{{NS}}}{tag}")
     return found.text.strip() if found is not None and found.text else ""
+
 
 class RomaniaScraper(BaseScraper):
 
@@ -39,7 +41,10 @@ class RomaniaScraper(BaseScraper):
         return points
 
     def _fetch_one(self, lat, lon, cat_id):
-        """Один запрос к API — возвращает (stations, prices) или ([], [])."""
+        """
+        Один запрос к API — возвращает (stations, prices) или ([], []).
+        При ошибке 429 (слишком много запросов) — делает паузу и повторяет.
+        """
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/xml, text/xml, */*",
@@ -52,16 +57,31 @@ class RomaniaScraper(BaseScraper):
             "CSVGasCatalogProductIds": cat_id,
             "OrderBy": "dist"
         }
-        try:
-            r = requests.get(self.base_url, params=params, headers=headers, timeout=15)
-            if r.status_code != 200:
-                return [], []
-            root = etree.fromstring(r.content)
-            stations = root.findall(f".//{{{NS}}}GasStation")
-            products = root.findall(f".//{{{NS}}}GasProduct")
-            return stations, products
-        except Exception:
-            return [], []
+
+        for attempt in range(3):
+            try:
+                r = requests.get(self.base_url, params=params,
+                                 headers=headers, timeout=15)
+
+                if r.status_code == 429:
+                    wait = 2 ** attempt  # 1, 2, 4 сек
+                    print(f"[RO] Лимит запросов (429), ждём {wait}с...")
+                    time.sleep(wait)
+                    continue
+
+                if r.status_code != 200:
+                    return [], []
+
+                root = etree.fromstring(r.content)
+                stations = root.findall(f".//{{{NS}}}GasStation")
+                products = root.findall(f".//{{{NS}}}GasProduct")
+                return stations, products
+
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+
+        return [], []
 
     def scrape(self):
         print(f"[RO] Начинаем сбор данных Румынии...")
@@ -76,7 +96,8 @@ class RomaniaScraper(BaseScraper):
             point_stations = {}
             point_prices = {}
 
-            with ThreadPoolExecutor(max_workers=5) as ex:
+            # Уменьшено с 5 до 3 потоков — снижаем риск бана по IP
+            with ThreadPoolExecutor(max_workers=3) as ex:
                 futs = {
                     ex.submit(self._fetch_one, lat, lon, cat_id): (cat_id, fuel_type)
                     for cat_id, fuel_type in self.fuel_categories.items()
@@ -109,8 +130,8 @@ class RomaniaScraper(BaseScraper):
 
             return point_stations, point_prices
 
-        # Параллельно обрабатываем все точки сетки
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        # Уменьшено с 20 до 10 потоков — снижаем риск бана по IP
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {
                 executor.submit(fetch_point, lat, lon): (lat, lon)
                 for lat, lon in grid
@@ -120,7 +141,7 @@ class RomaniaScraper(BaseScraper):
             for future in as_completed(futures):
                 done += 1
                 if done % 1000 == 0:
-                    print(f"[RO]   {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
+                    print(f"[RO] {done}/{len(grid)} точек обработано, АЗС: {len(all_stations)}...")
 
                 point_stations, point_prices = future.result()
 
@@ -151,12 +172,19 @@ class RomaniaScraper(BaseScraper):
 
     def _save_station(self, sid, st_el, prices):
         network_el = st_el.find(f"{{{NS}}}Network")
-        brand = xt(network_el, "Id") if network_el is not None else "Unknown"
+
+        # Исправлено: берём Name сети, а не числовой Id
+        if network_el is not None:
+            brand = xt(network_el, "Name") or xt(network_el, "Id") or "Unknown"
+        else:
+            brand = "Unknown"
+
         logo_el = network_el.find(f"{{{NS}}}Logo") if network_el is not None else None
         logo = xt(logo_el, "Logouri") if logo_el is not None else None
 
         addr_el = st_el.find(f"{{{NS}}}Addr")
         address = xt(addr_el, "Addrstring") if addr_el is not None else ""
+
         loc_el = addr_el.find(f"{{{NS}}}Location") if addr_el is not None else None
         lat = float(xt(loc_el, "Lat")) if loc_el is not None and xt(loc_el, "Lat") else None
         lon = float(xt(loc_el, "Lon")) if loc_el is not None and xt(loc_el, "Lon") else None
