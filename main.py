@@ -45,7 +45,8 @@ def main():
     scrapers = [
         #(MoldovaScraper, "MD"),
         #(RomaniaScraper, "RO"),
-        (ItalyScraper,   "IT"),
+        #(ItalyScraper,   "IT"),
+        (RussiaScraper,   "RU"),
     ]
 
     for scraper_class, country in scrapers:
