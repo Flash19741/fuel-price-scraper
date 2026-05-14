@@ -3,7 +3,7 @@ from db.supabase_client import get_client, log_scrape, finish_log
 from scrapers.moldova import MoldovaScraper
 from scrapers.romania import RomaniaScraper
 from scrapers.italy import ItalyScraper
-from scrapers.russia import RussiaScraper
+#from scrapers.russia import RussiaScraper
 
 
 def run_scraper(scraper_class, client, country_name):
@@ -44,10 +44,10 @@ def main():
     # Список скраперов для запуска.
     # Чтобы временно отключить страну — закомментируй её строку.
     scrapers = [
-        #(MoldovaScraper, "MD"),
-        #(RomaniaScraper, "RO"),
-        #(ItalyScraper,   "IT"),
-        (RussiaScraper,   "RU"),
+        (MoldovaScraper, "MD"),
+        (RomaniaScraper, "RO"),
+        (ItalyScraper,   "IT"),
+        #(RussiaScraper,   "RU"),
     ]
 
     for scraper_class, country in scrapers:
