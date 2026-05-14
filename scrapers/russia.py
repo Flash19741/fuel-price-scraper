@@ -247,7 +247,7 @@ class RosneftScraper(BaseScraper):
 # TODO: заменить на реальный URL после поиска через DevTools
 # Ссылка на Яндекс Метрику которую ты прислал — это не API АЗС,
 # а аналитика кликов. Нужно найти XHR/Fetch запрос с данными станций.
-TATNEFT_API_URL = "https://azs.tatneft.ru/api/stations"  # предположительный URL
+TATNEFT_API_URL = "https://api.gs.tatneft.ru/api/v2/azs/"  # предположительный URL
 
 TATNEFT_FUEL_MAP = {
     "АИ-92":     "gasoline_92",
