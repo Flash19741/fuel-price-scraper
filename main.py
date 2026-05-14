@@ -3,6 +3,7 @@ from db.supabase_client import get_client, log_scrape, finish_log
 from scrapers.moldova import MoldovaScraper
 from scrapers.romania import RomaniaScraper
 from scrapers.italy import ItalyScraper
+from scrapers.russia import RussiaScraper
 
 
 def run_scraper(scraper_class, client, country_name):
