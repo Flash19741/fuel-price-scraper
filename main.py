@@ -4,6 +4,7 @@ from scrapers.moldova import MoldovaScraper
 from scrapers.romania import RomaniaScraper
 from scrapers.italy import ItalyScraper
 from scrapers.russia import RosneftScraper, TatneftScraper
+from scrapers.neftika_trassa_a100 import NeftikaScraper, TrassaScraper, A100Scraper
 
 
 def run_scraper(scraper_class, client, country_name):
@@ -44,12 +45,15 @@ def main():
     # Список скраперов для запуска.
     # Чтобы временно отключить страну — закомментируй её строку.
     scrapers = [
-        (MoldovaScraper, "MD"),
-        (RomaniaScraper, "RO"),
-        (ItalyScraper,   "IT"),
-        (RosneftScraper,   "RU"),
-        (TatneftScraper,  "RU"),
-    ]
+        #(MoldovaScraper, "MD"),
+        #(RomaniaScraper, "RO"),
+        #(ItalyScraper,   "IT"),
+        #(RosneftScraper,   "RU"),
+        #(TatneftScraper,  "RU"),
+        (NeftikaScraper, "RU"),
+        (TrassaScraper,  "RU"),
+        (A100Scraper,    "BY"),
+            ]
 
     for scraper_class, country in scrapers:
         print(f"\n--- {country} ---")
