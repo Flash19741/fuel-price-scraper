@@ -1,30 +1,5 @@
 """
 Парсеры: Нефтика (RU), Трасса (RU), А-100 (BY).
-
-══════════════════════════════════════════════════════
-НЕФТИКА (neftika.ru)
-  ~40 АЗС, Брянская и Смоленская области.
-  Всё в HTML: координаты "N 53.278 E 34.385", цены "<strong>Аи-95 59,57</strong>".
-  Метод: BeautifulSoup. Готово полностью.
-
-ТРАССА (trassagk.ru, ПАО ЕвроТранс)
-  ~58 АЗС, Московский регион.
-  Адреса и координаты: HTML-таблица на /locator.
-  Цены: HTML карточки АЗС — структура из скриншота:
-    <div class="head">98</div>  → название топлива
-    <div class="price">95.98</div>  → цена
-  Карточки доступны по URL /api/station/?id=<N> или похожему.
-  Метод: запрос /locator для списка + запрос карточки каждой АЗС.
-
-А-100 (azs.a-100.by, Беларусь)
-  42 АЗС в Беларуси.
-  Цены: ОДИНАКОВЫЕ для всех АЗС, берём с главной страницы.
-    <div class="price-item__label">АИ-95</div>
-    <div class="price-item__price">2,67</div>
-  Координаты: страница /set-azs/map-azs/ содержит JS-объект
-    с данными всех АЗС (ищем в <script> теге).
-  Метод: BeautifulSoup + regex для извлечения JS-данных.
-══════════════════════════════════════════════════════
 """
 
 import re
@@ -60,7 +35,26 @@ NEFTIKA_FUEL_MAP = {
 class NeftikaScraper(BaseScraper):
     """
     Парсер сети АЗС Нефтика (~40 станций, Брянская и Смоленская обл.).
-    Данные встроены прямо в HTML главной страницы.
+
+    Сайт старый (2016), данные встроены в HTML главной страницы.
+
+    ОСОБЕННОСТИ HTML (найдены при отладке):
+
+    1. Координаты могут стоять либо в ОТДЕЛЬНОМ h4:
+         <h4>ААЗС №16 ул.Речная</h4>
+         <h4>N 53.278785 E 34.385325</h4>
+       ЛИБО В ТОЙ ЖЕ СТРОКЕ что и название:
+         <h4>ААЗС №33 г. Новозыбков ул. Мичурина  N 52.526853 E 31.961448</h4>
+
+    2. Цены иногда разбиты на несколько <strong>:
+         <strong>Аи-92 плюс 55</strong><strong>,17</strong>
+       Поэтому нельзя парсить каждый <strong> отдельно —
+       нужно сначала склеить текст соседних тегов.
+
+    3. Некоторые h4 содержат только координаты без названия.
+
+    РЕШЕНИЕ: парсим ВСЕ h4 у которых есть координаты (в любом месте строки),
+    а цены собираем из ВСЕГО текста блока (склеивая соседние strong-теги).
     """
 
     URL = "http://www.neftika.ru/"
@@ -75,24 +69,100 @@ class NeftikaScraper(BaseScraper):
             "Accept": "text/html,*/*",
         }
 
-    def _parse_coord(self, text: str):
+    def _extract_coord(self, text: str):
+        """Ищет координаты в строке. Возвращает (lat, lon) или (None, None)."""
         m = re.search(r"N\s*([\d.]+)\s*E\s*([\d.]+)", text, re.I)
         return (float(m.group(1)), float(m.group(2))) if m else (None, None)
 
-    def _parse_price(self, text: str):
-        text = text.strip()
-        m = re.search(r"([\d]+[.,][\d]+)\s*$", text)
-        if not m:
-            return None, None
-        price_str = m.group(1).replace(",", ".")
-        fuel_name = re.sub(r"\s+", " ", text[:m.start()].strip().lower())
-        fuel_type = NEFTIKA_FUEL_MAP.get(fuel_name)
-        if not fuel_type:
-            return None, None
-        try:
-            return fuel_type, float(price_str)
-        except ValueError:
-            return None, None
+    def _extract_name(self, text: str) -> str:
+        """Убирает координаты из строки названия, возвращает чистое имя."""
+        clean = re.sub(r"N\s*[\d.]+\s*E\s*[\d.]+", "", text, flags=re.I)
+        return clean.strip(" \t\n,.")
+
+    def _collect_price_text(self, start_tag) -> str:
+        """
+        Собирает весь текст цен начиная с тега start_tag до следующего блока АЗС.
+
+        Проблема: цена "55,17" может быть разбита на два <strong>:
+          <strong>Аи-92 плюс 55</strong><strong>,17</strong>
+        Решение: склеиваем текст всех соседних strong-тегов идущих подряд,
+        а потом уже ищем в склеенной строке топливо+цену.
+        """
+        lines = []
+        current_line = ""
+
+        for tag in start_tag.find_next_siblings():
+            # Стоп — следующий блок АЗС (h4 с координатами или h3 раздела)
+            if tag.name == "h3":
+                break
+            if tag.name == "h4":
+                # h4 с координатами — новая АЗС
+                if re.search(r"N\s*[\d.]+\s*E", tag.get_text(), re.I):
+                    break
+                # h4 без координат — тоже новая АЗС (название следующей)
+                break
+
+            # Собираем все strong внутри тега
+            strongs = tag.find_all("strong") if tag.name != "strong" else [tag]
+            if not strongs:
+                # Тег без strong — если была накоплена строка, сохраняем
+                if current_line.strip():
+                    lines.append(current_line.strip())
+                    current_line = ""
+                continue
+
+            for strong in strongs:
+                text = strong.get_text()
+                # Если текст начинается с запятой или цифры — склеиваем с предыдущим
+                if current_line and re.match(r"^[,.\d]", text.strip()):
+                    current_line += text
+                else:
+                    if current_line.strip():
+                        lines.append(current_line.strip())
+                    current_line = text
+
+        if current_line.strip():
+            lines.append(current_line.strip())
+
+        return "\n".join(lines)
+
+    def _parse_prices_from_text(self, text: str) -> list[tuple]:
+        """
+        Парсит цены из многострочного текста.
+        Возвращает список (fuel_type, price).
+
+        Формат строки: "Аи-95 59,57" или "ДТ Акция 59,77"
+        """
+        results = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Пропускаем служебные строки
+            if "цены" in line.lower() and "действительны" in line.lower():
+                continue
+            if "временно" in line.lower():
+                continue
+
+            # Ищем число в конце строки
+            m = re.search(r"([\d]+[.,][\d]+)\s*$", line)
+            if not m:
+                continue
+
+            price_str = m.group(1).replace(",", ".")
+            fuel_raw = re.sub(r"\s+", " ", line[:m.start()].strip().lower())
+            fuel_type = NEFTIKA_FUEL_MAP.get(fuel_raw)
+            if not fuel_type:
+                continue
+
+            try:
+                price = float(price_str)
+                if price > 0:
+                    results.append((fuel_type, price))
+            except ValueError:
+                pass
+
+        return results
 
     def scrape(self):
         print(f"[RU/Нефтика] Загружаем {self.URL}...")
@@ -101,66 +171,79 @@ class NeftikaScraper(BaseScraper):
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Находим все h4 с координатами
-        coord_headers = soup.find_all("h4", string=re.compile(r"N\s*[\d.]+\s*E", re.I))
-        print(f"[RU/Нефтика] Найдено блоков с координатами: {len(coord_headers)}")
+        # Находим ВСЕ h4 у которых ЕСТЬ координаты (в любом месте текста)
+        all_h4 = soup.find_all("h4")
+        coord_tags = [
+            tag for tag in all_h4
+            if re.search(r"N\s*[\d.]+\s*E\s*[\d.]+", tag.get_text(), re.I)
+        ]
+        print(f"[RU/Нефтика] Найдено h4 с координатами: {len(coord_tags)}")
 
-        for coord_h4 in coord_headers:
+        # Словарь source_id → данные станции (чтобы не дублировать)
+        seen_ids = set()
+
+        for h4 in coord_tags:
             try:
-                self._parse_block(coord_h4)
-            except Exception as e:
-                print(f"[RU/Нефтика] Ошибка блока: {e}")
-
-        print(f"[RU/Нефтика] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
-
-    def _parse_block(self, coord_h4):
-        lat, lon = self._parse_coord(coord_h4.get_text())
-        if lat is None:
-            return
-
-        # Название — предыдущий h4/h3 без координат
-        name_tag = coord_h4.find_previous(["h4", "h3"])
-        name = name_tag.get_text(strip=True) if name_tag else self.brand
-        if re.search(r"N\s*[\d.]+\s*E", name, re.I):
-            name = self.brand
-
-        num_m = re.search(r"[№#]?\s*(\d+)", name)
-        source_id = f"neftika_{num_m.group(1)}" if num_m else f"neftika_{lat}_{lon}"
-
-        # Город из ближайшего h3/h4-заголовка раздела
-        city = ""
-        for prev in coord_h4.find_all_previous(["h3", "h4"]):
-            t = prev.get_text(strip=True)
-            if re.search(r"^(г\.|город|обл\.|р-н|район)", t, re.I):
-                city = t
-                break
-
-        station_id = upsert_station(self.client, {
-            "country": self.country, "brand": self.brand,
-            "name": name, "address": name, "city": city,
-            "latitude": lat, "longitude": lon,
-            "logo_url": self.get_brand_logo(self.brand),
-            "source_id": source_id,
-        })
-        self.stations_count += 1
-
-        for tag in coord_h4.find_next_siblings():
-            if tag.name == "h4" and re.search(r"N\s*[\d.]+\s*E", tag.get_text(), re.I):
-                break
-            if tag.name == "h3":
-                break
-            strongs = tag.find_all("strong") if tag.name != "strong" else [tag]
-            for strong in strongs:
-                text = strong.get_text(strip=True)
-                if "цены" in text.lower() and "действительны" in text.lower():
+                full_text = h4.get_text(strip=True)
+                lat, lon = self._extract_coord(full_text)
+                if lat is None:
                     continue
-                if "временно" in text.lower():
+
+                name = self._extract_name(full_text)
+
+                # Если название пустое — берём предыдущий h4 (там может быть имя)
+                if not name or len(name) < 3:
+                    prev_h4 = h4.find_previous("h4")
+                    if prev_h4:
+                        prev_text = prev_h4.get_text(strip=True)
+                        if not re.search(r"N\s*[\d.]+\s*E", prev_text, re.I):
+                            name = prev_text
+
+                if not name:
+                    name = self.brand
+
+                # source_id из номера АЗС
+                num_m = re.search(r"[№#№]?\s*(\d+)", name)
+                source_id = f"neftika_{num_m.group(1)}" if num_m else f"neftika_{lat}_{lon}"
+
+                if source_id in seen_ids:
                     continue
-                fuel_type, price = self._parse_price(text)
-                if fuel_type and price and price > 0:
+                seen_ids.add(source_id)
+
+                # Город — ближайший h3/h4 заголовок раздела выше
+                city = ""
+                for prev in h4.find_all_previous(["h3", "h4"]):
+                    t = prev.get_text(strip=True)
+                    if re.search(r"N\s*[\d.]+\s*E", t, re.I):
+                        continue
+                    if re.search(r"(г\.|город|обл\.|р-н|район|пгт\.)", t, re.I):
+                        city = t
+                        break
+
+                station_id = upsert_station(self.client, {
+                    "country":   self.country,
+                    "brand":     self.brand,
+                    "name":      name,
+                    "address":   name,
+                    "city":      city,
+                    "latitude":  lat,
+                    "longitude": lon,
+                    "logo_url":  self.get_brand_logo(self.brand),
+                    "source_id": source_id,
+                })
+                self.stations_count += 1
+
+                # Собираем цены — идём по siblings от этого h4
+                price_text = self._collect_price_text(h4)
+                for fuel_type, price in self._parse_prices_from_text(price_text):
                     upsert_price(self.client, station_id,
                                  fuel_type, price, self.currency)
                     self.prices_count += 1
+
+            except Exception as e:
+                print(f"[RU/Нефтика] Ошибка блока '{h4.get_text()[:40]}': {e}")
+
+        print(f"[RU/Нефтика] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,22 +251,19 @@ class NeftikaScraper(BaseScraper):
 # ─────────────────────────────────────────────────────────────────────────────
 
 TRASSA_FUEL_MAP = {
-    # Названия из div.head в карточке АЗС (числа и текст)
     "98":      "gasoline_98",
     "95":      "gasoline_95",
     "92":      "gasoline_92",
-    "пс":      "gasoline_95_premium",   # "ПС" = Премиум Супер
+    "пс":      "gasoline_95_premium",
     "дт":      "diesel",
     "дизель":  "diesel",
-    "эл.":     "electric",              # зарядка электромобиля
+    "эл.":     "electric",
     "эл":      "electric",
     "суг":     "lpg",
     "газ":     "lpg",
     "метан":   "cng",
     "adblue":  "adblue",
-    # Запасные английские варианты
     "diesel":  "diesel",
-    "lpg":     "lpg",
 }
 
 
@@ -191,24 +271,17 @@ class TrassaScraper(BaseScraper):
     """
     Парсер сети АЗС Трасса / ПАО ЕвроТранс (~58 станций, Московский регион).
 
-    Шаг 1: Берём список АЗС (название, адрес, координаты) из HTML-таблицы на /locator.
-    Шаг 2: Для каждой АЗС запрашиваем страницу /locator?id=N (или похожую)
-            и парсим цены из HTML-карточки.
-
-    Структура карточки АЗС (из скриншота DevTools):
-    <div class="mgo-cards mgo-cls">
-      <h2 class="section-name">Цены на топливо</h2>
-      <a href="#" class="mgo-card">
-        <div class="head">98</div>    ← название топлива
-        <div class="body">
-          <div class="price">95.98</div>  ← цена
-        </div>
-      </a>
-      <a href="#" class="mgo-card active">
+    Адреса + координаты: HTML-таблица на /locator.
+    Цены: HTML карточки АЗС — структура из DevTools:
+      <a class="mgo-card">
         <div class="head">95</div>
-        ...
+        <div class="body"><div class="price">70.68</div></div>
       </a>
-    </div>
+
+    ПРОБЛЕМА TIMEOUT: trassagk.ru блокирует запросы с серверов GitHub Actions
+    по IP-адресу. Решение — добавить User-Agent браузера и задержки.
+    Если timeout повторяется — сайт нужно парсить через прокси или
+    исключить из автоматического запуска (запускать вручную).
     """
 
     LOCATOR_URL = "https://trassagk.ru/locator"
@@ -220,14 +293,22 @@ class TrassaScraper(BaseScraper):
         self.brand = "Трасса"
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml,*/*",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
             "Referer": "https://trassagk.ru/",
+            "Connection": "keep-alive",
         })
 
     def _load_stations_html(self) -> list[dict]:
         """Загружает список АЗС из HTML-таблицы на /locator."""
-        r = self.session.get(self.LOCATOR_URL, timeout=30)
+        # Увеличенный timeout — сайт медленный
+        r = self.session.get(self.LOCATOR_URL, timeout=60)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
@@ -242,7 +323,6 @@ class TrassaScraper(BaseScraper):
                 lat_str = cols[2].get_text(strip=True)
                 lon_str = cols[3].get_text(strip=True)
 
-                # Только АЗС, пропускаем рестораны/ЭЗС/AdBlue-модули
                 if any(x in name.lower() for x in ["ресторан", "элзс", "adblue"]):
                     continue
                 if "азс" not in name.lower() and "трасса" not in name.lower():
@@ -255,7 +335,6 @@ class TrassaScraper(BaseScraper):
 
                 num_m = re.search(r"№\s*(\d+)", name)
                 number = num_m.group(1) if num_m else ""
-
                 stations.append({
                     "source_id": f"trassa_{number}" if number else f"trassa_{lat}_{lon}",
                     "number": number,
@@ -268,24 +347,12 @@ class TrassaScraper(BaseScraper):
 
     def _fetch_prices(self, number: str) -> dict:
         """
-        Запрашивает страницу конкретной АЗС и парсит цены.
-
-        Трасса использует карту на основе MGO (map.geo.by).
-        При клике на маркер карта делает AJAX-запрос к /locator?id=N
-        или загружает данные через JS. Пробуем несколько вариантов URL.
-
-        Структура HTML карточки (из скриншота):
-        <a class="mgo-card">
-          <div class="head">95</div>       ← марка топлива
-          <div class="body">
-            <div class="price">70.68</div> ← цена
-          </div>
-        </a>
+        Запрашивает HTML-карточку АЗС и парсит цены.
+        Пробует несколько вариантов URL.
         """
         if not number:
             return {}
 
-        # Пробуем разные варианты URL для получения данных АЗС
         candidate_urls = [
             f"https://trassagk.ru/locator/?id={number}",
             f"https://trassagk.ru/locator?id={number}",
@@ -295,21 +362,21 @@ class TrassaScraper(BaseScraper):
 
         for url in candidate_urls:
             try:
-                r = self.session.get(url, timeout=15)
+                r = self.session.get(url, timeout=20)
                 if r.status_code != 200:
                     continue
 
-                # Пробуем JSON ответ
+                # Пробуем JSON
                 try:
                     data = r.json()
-                    prices = self._extract_prices_from_json(data)
+                    prices = self._extract_prices_json(data)
                     if prices:
                         return prices
                 except Exception:
                     pass
 
-                # Пробуем HTML карточку
-                prices = self._extract_prices_from_html(r.text)
+                # Пробуем HTML
+                prices = self._extract_prices_html(r.text)
                 if prices:
                     return prices
 
@@ -318,30 +385,24 @@ class TrassaScraper(BaseScraper):
 
         return {}
 
-    def _extract_prices_from_html(self, html: str) -> dict:
+    def _extract_prices_html(self, html: str) -> dict:
         """
-        Парсит цены из HTML карточки АЗС.
-        Структура: <a class="mgo-card"><div class="head">95</div>
-                   <div class="price">70.68</div></a>
+        Парсит цены из HTML-карточки.
+        Структура: <a class="mgo-card">
+                     <div class="head">95</div>
+                     <div class="body"><div class="price">70.68</div></div>
+                   </a>
         """
         soup = BeautifulSoup(html, "html.parser")
         prices = {}
 
-        # Ищем блок "Цены на топливо"
-        cards_block = soup.find(class_="mgo-cards")
-        if not cards_block:
-            # Ищем любые карточки с топливом
-            cards_block = soup
-
-        for card in cards_block.find_all(class_="mgo-card"):
+        for card in soup.find_all(class_="mgo-card"):
             head = card.find(class_="head")
             price_el = card.find(class_="price")
             if not head or not price_el:
                 continue
-
             fuel_name = head.get_text(strip=True).lower()
             price_str = price_el.get_text(strip=True).replace(",", ".")
-
             fuel_type = TRASSA_FUEL_MAP.get(fuel_name)
             if not fuel_type:
                 continue
@@ -350,15 +411,13 @@ class TrassaScraper(BaseScraper):
                 if price > 0:
                     prices[fuel_type] = price
             except ValueError:
-                continue
-
+                pass
         return prices
 
-    def _extract_prices_from_json(self, data) -> dict:
-        """Пробует извлечь цены из JSON ответа (если API вернёт JSON)."""
+    def _extract_prices_json(self, data) -> dict:
+        """Извлекает цены из JSON ответа."""
         prices = {}
         fuel_list = None
-
         if isinstance(data, list):
             fuel_list = data
         elif isinstance(data, dict):
@@ -366,12 +425,10 @@ class TrassaScraper(BaseScraper):
                 if key in data and isinstance(data[key], list):
                     fuel_list = data[key]
                     break
-
         if not fuel_list:
             return {}
-
         for item in fuel_list:
-            name = (item.get("name") or item.get("type") or item.get("head") or "").lower()
+            name = (item.get("name") or item.get("head") or item.get("type") or "").lower()
             price_raw = item.get("price") or item.get("cost") or item.get("value")
             fuel_type = TRASSA_FUEL_MAP.get(name)
             if fuel_type and price_raw:
@@ -383,15 +440,25 @@ class TrassaScraper(BaseScraper):
 
     def scrape(self):
         print(f"[RU/Трасса] Загружаем список АЗС из HTML...")
-        stations = self._load_stations_html()
+
+        try:
+            stations = self._load_stations_html()
+        except requests.exceptions.ConnectTimeout:
+            print(f"[RU/Трасса] ⚠ Timeout — сайт trassagk.ru недоступен с серверов GitHub.")
+            print(f"[RU/Трасса]   Возможные причины:")
+            print(f"[RU/Трасса]   1. Сайт блокирует IP-адреса GitHub Actions")
+            print(f"[RU/Трасса]   2. Временные проблемы с сайтом")
+            print(f"[RU/Трасса]   Решение: добавить повтор через 5 мин или исключить из автозапуска.")
+            raise
+        except Exception as e:
+            print(f"[RU/Трасса] Ошибка загрузки: {e}")
+            raise
+
         print(f"[RU/Трасса] Найдено {len(stations)} АЗС")
 
         for st in stations:
             try:
-                # Запрашиваем цены для этой АЗС
                 prices = self._fetch_prices(st["number"])
-                if not prices:
-                    print(f"[RU/Трасса] АЗС №{st['number']}: цены не найдены")
 
                 station_id = upsert_station(self.client, {
                     "country":   self.country,
@@ -411,7 +478,6 @@ class TrassaScraper(BaseScraper):
                                  fuel_type, price, self.currency)
                     self.prices_count += 1
 
-                # Пауза между запросами — не нагружаем сервер
                 time.sleep(0.3)
 
             except Exception as e:
@@ -419,13 +485,11 @@ class TrassaScraper(BaseScraper):
 
         print(f"[RU/Трасса] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
-        if self.prices_count == 0:
-            print(f"[RU/Трасса] ⚠ Цены не загрузились.")
-            print(f"[RU/Трасса]   Нужно уточнить URL карточки АЗС через DevTools:")
-            print(f"[RU/Трасса]   1. Открой trassagk.ru/locator → кликни на АЗС на карте")
-            print(f"[RU/Трасса]   2. F12 → Network → Fetch/XHR → найди запрос который")
-            print(f"[RU/Трасса]      вернул HTML карточки с ценами")
-            print(f"[RU/Трасса]   3. Добавь URL в candidate_urls в _fetch_prices()")
+        if self.stations_count > 0 and self.prices_count == 0:
+            print(f"[RU/Трасса] ⚠ АЗС сохранены без цен.")
+            print(f"[RU/Трасса]   Нужно уточнить URL карточки через DevTools:")
+            print(f"[RU/Трасса]   Открой trassagk.ru/locator → кликни АЗС → F12 → Network")
+            print(f"[RU/Трасса]   Найди Fetch/XHR запрос который вернул HTML с ценами")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +502,8 @@ A100_FUEL_MAP = {
     "аи-92":    "gasoline_92",
     "дт евро":  "diesel",
     "дт":       "diesel",
-    "газ":      "lpg",
+    # "газ" — отдельная обработка: текст содержит tooltip с описанием,
+    # поэтому ищем по началу строки
     "adblue":   "adblue",
 }
 
@@ -447,17 +512,8 @@ class A100Scraper(BaseScraper):
     """
     Парсер сети АЗС А-100 (42 АЗС, Беларусь).
 
-    ЦЕНЫ одинаковые для всех АЗС — берём с главной страницы:
-      <div class="price-item__label">АИ-95</div>
-      <div class="price-item__price">2,67</div>
-
-    КООРДИНАТЫ и АДРЕСА: страница карты /set-azs/map-azs/ содержит
-    JS-инициализацию карты с данными всех АЗС в <script> теге.
-    Ищем паттерн: var stations = [...] или JSON.parse('[...]')
-    или data-атрибуты на div#map.
-
-    Если JS-данные не найдены — берём адреса из HTML-таблицы (без координат)
-    и сохраняем АЗС только с адресом, без lat/lon.
+    Цены одинаковые для всех АЗС — берём с главной страницы.
+    Координаты — из JavaScript на странице карты.
     """
 
     HOME_URL = "https://azs.a-100.by/"
@@ -474,189 +530,229 @@ class A100Scraper(BaseScraper):
             "Referer": "https://azs.a-100.by/",
         }
 
-    # ── Цены с главной страницы ───────────────────────────────────────────────
-
     def _fetch_prices(self) -> dict:
         """
-        Берёт актуальные цены с главной страницы А-100.
-        Цены одинаковые для всех АЗС сети.
+        Парсит цены с главной страницы.
 
         Структура HTML:
-        <div class="price-item__label">АИ-95</div>
-        <div class="price-item__price">2,67</div>
+          <div class="price-item__label">АИ-95</div>
+          <div class="price-item__price">2,67</div>
+
+        ИСПРАВЛЕНИЕ: поле "Газ" содержит <span class="tooltip..."> внутри label,
+        поэтому get_text() возвращает "Газ Углеводородный сжиженный газ...".
+        Берём только первое слово/фразу до пробела.
         """
         r = requests.get(self.HOME_URL, headers=self.headers, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
         prices = {}
-        # Ищем блок с ценами (класс price-block или price-map-block)
-        price_block = soup.find(class_=re.compile(r"price-block|price-map-block"))
-        if not price_block:
-            print("[BY/А-100] ⚠ Блок цен не найден на главной странице!")
-            return {}
-
-        items = price_block.find_all(class_=re.compile(r"price-item|price-block__li"))
-        for item in items:
-            label = item.find(class_=re.compile(r"label|name"))
-            price_el = item.find(class_=re.compile(r"price(?!-)"))  # price, но не price-item
-            if not label or not price_el:
+        for item in soup.find_all(class_=re.compile(r"price-item(?!__)")):
+            label_el = item.find(class_=re.compile(r"price-item__label"))
+            price_el  = item.find(class_=re.compile(r"price-item__price"))
+            if not label_el or not price_el:
                 continue
 
-            fuel_name = label.get_text(strip=True).lower()
-            # Убираем подсказку (tooltip) из названия
-            fuel_name = re.sub(r"\s+", " ", fuel_name).strip()
+            # Берём только прямой текстовый узел label (без tooltip-спана)
+            # Метод: ищем первый NavigableString внутри label
+            label_text = ""
+            for child in label_el.children:
+                # NavigableString — это текстовый узел (не тег)
+                if hasattr(child, "strip"):
+                    label_text = child.strip()
+                    if label_text:
+                        break
 
+            if not label_text:
+                label_text = label_el.get_text(separator=" ").strip()
+                # Берём только первую часть до возможного tooltip-текста
+                label_text = label_text.split("\n")[0].strip()
+
+            fuel_name = label_text.lower().strip()
             price_str = price_el.get_text(strip=True).replace(",", ".")
-            fuel_type = A100_FUEL_MAP.get(fuel_name)
 
-            if fuel_type:
-                try:
-                    price = float(price_str)
-                    if price > 0:
-                        prices[fuel_type] = price
-                except ValueError:
-                    pass
+            # Газ — особый случай
+            if fuel_name.startswith("газ"):
+                fuel_type = "lpg"
+            else:
+                fuel_type = A100_FUEL_MAP.get(fuel_name)
 
-        print(f"[BY/А-100] Цены с главной: {prices}")
+            if not fuel_type:
+                continue
+
+            try:
+                price = float(price_str)
+                if price > 0:
+                    prices[fuel_type] = price
+            except ValueError:
+                pass
+
+        print(f"[BY/А-100] Цены: {prices}")
         return prices
-
-    # ── Координаты АЗС ────────────────────────────────────────────────────────
 
     def _fetch_stations(self) -> list[dict]:
         """
         Загружает список АЗС со страницы карты.
-
-        Пробует несколько способов найти координаты:
-        1. JSON в <script> теге — самый надёжный
-        2. data-атрибуты на элементах карты
-        3. HTML-таблица (адреса без координат) — запасной вариант
+        Пробует 3 способа найти координаты.
         """
         r = requests.get(self.MAP_URL, headers=self.headers, timeout=30)
         r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
         html = r.text
-        soup = BeautifulSoup(html, "html.parser")
 
-        # ── Способ 1: JSON в <script> тегах ──────────────────────────────────
-        stations = self._try_extract_from_scripts(soup)
+        # Способ 1: JSON в <script> тегах
+        stations = self._from_scripts(soup)
         if stations:
-            print(f"[BY/А-100] Координаты найдены в JS: {len(stations)} АЗС")
+            print(f"[BY/А-100] Координаты из JS: {len(stations)} АЗС")
             return stations
 
-        # ── Способ 2: data-атрибуты на элементах ─────────────────────────────
-        stations = self._try_extract_from_data_attrs(soup)
+        # Способ 2: data-атрибуты
+        stations = self._from_data_attrs(soup)
         if stations:
-            print(f"[BY/А-100] Координаты найдены в data-атрибутах: {len(stations)} АЗС")
+            print(f"[BY/А-100] Координаты из data-атрибутов: {len(stations)} АЗС")
             return stations
 
-        # ── Способ 3: HTML-таблица (адреса без координат) ─────────────────────
-        print(f"[BY/А-100] ⚠ Координаты не найдены. Сохраняем АЗС только с адресами.")
-        return self._extract_from_html_table(soup)
+        # Способ 3: ищем lat/lon прямо в тексте скриптов regex-ом
+        stations = self._from_script_regex(html)
+        if stations:
+            print(f"[BY/А-100] Координаты из regex в JS: {len(stations)} АЗС")
+            return stations
 
-    def _try_extract_from_scripts(self, soup) -> list[dict]:
-        """Ищет JSON с данными АЗС внутри <script> тегов."""
+        # Запасной: HTML-таблица без координат
+        print(f"[BY/А-100] ⚠ Координаты не найдены. Берём адреса из HTML.")
+        return self._from_html_table(soup)
+
+    def _from_scripts(self, soup) -> list[dict]:
+        """Ищет JSON массив с данными АЗС в тегах <script>."""
         for script in soup.find_all("script"):
             text = script.string or ""
-            if not text or "lat" not in text.lower():
+            if not text or len(text) < 100:
+                continue
+            if not ("lat" in text or "latitude" in text or "LATITUDE" in text):
                 continue
 
-            # Паттерны JS: var stations = [...], BX.message({...}), window.stations = [...]
+            # Разные паттерны JS инициализации
             patterns = [
-                r'(?:var\s+stations|window\.stations)\s*=\s*(\[.+?\])\s*[;,]',
+                r'(?:var\s+\w*[Ss]tation\w*|window\.\w*[Ss]tation\w*)\s*=\s*(\[.+?\])\s*[;,]',
+                r'"(?:stations|items|azs|points|markers)"\s*:\s*(\[.+?\])',
+                r'(?:stations|items|points|markers)\s*:\s*(\[.+?\])',
                 r'BX\.message\s*\(\s*(\{.+?\})\s*\)',
-                r'"stations"\s*:\s*(\[.+?\])',
-                r'stations\s*:\s*(\[.+?\])',
+                # Bitrix CMS (сайт А-100 скорее всего на Bitrix)
+                r'arResult\s*=\s*(\[.+?\])',
+                r'STATIONS\s*=\s*(\[.+?\])',
             ]
 
             for pattern in patterns:
-                m = re.search(pattern, text, re.DOTALL)
-                if not m:
-                    continue
-                try:
-                    data = json.loads(m.group(1))
-                    if isinstance(data, list) and data:
-                        return self._normalize_station_list(data)
-                    elif isinstance(data, dict):
-                        for key in ("stations", "azs", "items"):
-                            if key in data and isinstance(data[key], list):
-                                return self._normalize_station_list(data[key])
-                except (json.JSONDecodeError, KeyError):
-                    continue
-
+                for m in re.finditer(pattern, text, re.DOTALL):
+                    try:
+                        data = json.loads(m.group(1))
+                        if isinstance(data, list) and len(data) > 5:
+                            result = self._normalize(data)
+                            if result:
+                                return result
+                        elif isinstance(data, dict):
+                            for key in ("stations", "azs", "items", "STATIONS"):
+                                if key in data and isinstance(data[key], list):
+                                    result = self._normalize(data[key])
+                                    if result:
+                                        return result
+                    except (json.JSONDecodeError, KeyError):
+                        continue
         return []
 
-    def _try_extract_from_data_attrs(self, soup) -> list[dict]:
-        """Ищет координаты в data-атрибутах HTML-элементов."""
+    def _from_data_attrs(self, soup) -> list[dict]:
+        """Ищет координаты в data-атрибутах элементов."""
         stations = []
-        # data-lat / data-lng или data-coords
         for el in soup.find_all(attrs={"data-lat": True}):
             try:
-                lat = float(el.get("data-lat") or el.get("data-latitude", 0))
+                lat = float(el.get("data-lat", 0))
                 lon = float(el.get("data-lng") or el.get("data-lon") or
                             el.get("data-longitude", 0))
                 if lat and lon:
-                    num = el.get("data-id") or el.get("data-num") or ""
-                    addr = el.get("data-address") or el.get("title") or ""
                     stations.append({
-                        "number": str(num),
-                        "address": addr,
-                        "lat": lat,
-                        "lon": lon,
+                        "number": str(el.get("data-id") or el.get("data-num") or ""),
+                        "address": el.get("data-address") or el.get("title") or "",
+                        "lat": lat, "lon": lon,
                     })
             except (ValueError, TypeError):
                 continue
-
         return stations
 
-    def _extract_from_html_table(self, soup) -> list[dict]:
+    def _from_script_regex(self, html: str) -> list[dict]:
         """
-        Запасной вариант: берём адреса из HTML-таблицы.
-        Координат нет — АЗС сохранятся без lat/lon.
+        Ищет пары координат напрямую в тексте JS через regex.
+        Ищем паттерн: "lat":53.xxx,"lon":27.xxx или похожие.
         """
+        # Ищем все объекты с lat+lon в одной строке
+        pattern = re.compile(
+            r'"(?:lat|latitude|LAT)"\s*:\s*([\d.]+)'
+            r'.*?'
+            r'"(?:lon|lng|longitude|LON|LNG)"\s*:\s*([\d.]+)',
+            re.DOTALL
+        )
+        stations = []
+        for m in pattern.finditer(html):
+            try:
+                lat = float(m.group(1))
+                lon = float(m.group(2))
+                # Фильтруем координаты Беларуси: lat 51-56, lon 23-33
+                if 51 < lat < 56 and 23 < lon < 33:
+                    stations.append({"number": "", "address": "", "lat": lat, "lon": lon})
+            except ValueError:
+                continue
+
+        # Убираем дубликаты по координатам
+        seen = set()
+        unique = []
+        for st in stations:
+            key = (round(st["lat"], 4), round(st["lon"], 4))
+            if key not in seen:
+                seen.add(key)
+                unique.append(st)
+
+        return unique
+
+    def _from_html_table(self, soup) -> list[dict]:
+        """Запасной вариант: адреса из HTML-таблицы без координат."""
         stations = []
         for table in soup.find_all("table"):
             for row in table.find_all("tr"):
                 cols = row.find_all("td")
                 if len(cols) < 2:
                     continue
-                number_text = cols[0].get_text(strip=True)
-                address = cols[1].get_text(strip=True) if len(cols) > 1 else ""
-                num_m = re.search(r"(\d+)", number_text)
+                num_m = re.search(r"(\d+)", cols[0].get_text())
                 if num_m:
                     stations.append({
                         "number": num_m.group(1),
-                        "address": address,
-                        "lat": None,
-                        "lon": None,
+                        "address": cols[1].get_text(strip=True) if len(cols) > 1 else "",
+                        "lat": None, "lon": None,
                     })
         return stations
 
-    def _normalize_station_list(self, raw: list) -> list[dict]:
-        """Нормализует список АЗС из разных форматов JS."""
+    def _normalize(self, raw: list) -> list[dict]:
+        """Нормализует сырые данные АЗС из JS."""
         result = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            lat = item.get("lat") or item.get("latitude") or item.get("LATITUDE")
+            lat = (item.get("lat") or item.get("latitude") or
+                   item.get("LAT") or item.get("LATITUDE"))
             lon = (item.get("lon") or item.get("lng") or
-                   item.get("longitude") or item.get("LONGITUDE"))
-            num = (str(item.get("id") or item.get("ID") or
-                       item.get("num") or item.get("number") or ""))
-            addr = (item.get("address") or item.get("ADDRESS") or
-                    item.get("addr") or "")
+                   item.get("longitude") or item.get("LON") or
+                   item.get("LNG") or item.get("LONGITUDE"))
             if lat and lon:
                 result.append({
-                    "number": num,
-                    "address": addr,
+                    "number": str(item.get("id") or item.get("ID") or
+                                  item.get("num") or item.get("NUMBER") or ""),
+                    "address": (item.get("address") or item.get("ADDRESS") or
+                                item.get("addr") or ""),
                     "lat": float(lat),
                     "lon": float(lon),
                 })
         return result
 
-    # ── Основной метод ────────────────────────────────────────────────────────
-
     def scrape(self):
-        print(f"[BY/А-100] Загружаем цены с главной страницы...")
+        print(f"[BY/А-100] Загружаем цены...")
         prices = self._fetch_prices()
 
         print(f"[BY/А-100] Загружаем список АЗС...")
@@ -664,29 +760,26 @@ class A100Scraper(BaseScraper):
         print(f"[BY/А-100] Получено {len(stations)} АЗС")
 
         if not stations:
-            raise RuntimeError(
-                "Не удалось получить список АЗС А-100. "
-                "Сайт использует JavaScript-карту — нужно найти API вручную. "
-                "Открой /set-azs/map-azs/ → F12 → Network → Fetch/XHR"
-            )
+            raise RuntimeError("Не удалось получить список АЗС А-100.")
 
         for st in stations:
             try:
                 number = st.get("number", "")
+                sid = f"a100_{number}" if number else f"a100_{st.get('lat')}_{st.get('lon')}"
+
                 station_id = upsert_station(self.client, {
                     "country":   self.country,
                     "brand":     self.brand,
                     "name":      f"{self.brand} №{number}" if number else self.brand,
                     "address":   st.get("address", ""),
                     "city":      "Беларусь",
-                    "latitude":  st.get("lat"),   # может быть None
-                    "longitude": st.get("lon"),   # может быть None
+                    "latitude":  st.get("lat"),
+                    "longitude": st.get("lon"),
                     "logo_url":  self.get_brand_logo(self.brand),
-                    "source_id": f"a100_{number}" if number else f"a100_{st.get('lat')}_{st.get('lon')}",
+                    "source_id": sid,
                 })
                 self.stations_count += 1
 
-                # Применяем общие цены к каждой АЗС
                 for fuel_type, price in prices.items():
                     upsert_price(self.client, station_id,
                                  fuel_type, price, self.currency)
@@ -697,6 +790,8 @@ class A100Scraper(BaseScraper):
 
         print(f"[BY/А-100] Готово: {self.stations_count} АЗС, {self.prices_count} цен")
 
-        if self.stations_count > 0 and not stations[0].get("lat"):
-            print(f"[BY/А-100] ⚠ АЗС сохранены без координат.")
-            print(f"[BY/А-100]   Чтобы добавить координаты — найди API карты через DevTools.")
+        no_coords = sum(1 for s in stations if not s.get("lat"))
+        if no_coords:
+            print(f"[BY/А-100] ⚠ {no_coords} АЗС без координат.")
+            print(f"[BY/А-100]   Открой /set-azs/map-azs/ → F12 → Network → Fetch/XHR")
+            print(f"[BY/А-100]   Найди запрос с координатами → пришли URL")
