@@ -1,35 +1,23 @@
 """
 Парсеры российских сетей АЗС: Роснефть и Татнефть.
 
-Роснефть: API найден — https://rosneft-azs.ru/front-api/stations
-  Отдаёт ВСЕ АЗС одним запросом (~3000+ станций по всей России).
-  Структура ответа:
-  {
-    "data": {
-      "regions": [{"code": 77, "name": "Москва"}, ...],
-      "fuels":   [{"code": "ai95", "name": "АИ-95"}, ...],
-      "stations": [
-        {
-          "id": 54857,
-          "name": "Курганнефтепродукт",
-          "номер": "АЗС 2",          ← номер станции (тоже бывает "number")
-          "brand": "rosneft",
-          "region": 45,              ← числовой код региона
-          "address": "...",
-          "coordinate": {"lat": 55.458804, "lng": 65.365697},
-          "currency": "RUB",
-          "fuels":  [{"code": "ai92", "price": 60.5}, ...],  ← иногда поле называется "топливо"
-          "services": [...]
-        }, ...
-      ]
-    }
-  }
+══════════════════════════════════════════════════════
+РОСНЕФТЬ
+  API: https://rosneft-azs.ru/front-api/stations
+  Один GET-запрос → все ~3000 АЗС по России.
+  Топливо: строковый код "ai92", "ai95", "diesel" и т.д.
+  Особенность: часть станций использует кириллицу "топливо"/"цена".
 
-  ВАЖНО: в одном ответе некоторые станции используют ключ "fuels",
-  другие — "топливо" (кириллица). Код обрабатывает оба варианта.
-
-Татнефть: API endpoint ещё не найден.
-  Инструкция по поиску — в методе scrape() класса TatneftScraper.
+ТАТНЕФТЬ
+  API станций:  https://api.gs.tatneft.ru/api/v2/azs/
+  API топлива:  https://api.gs.tatneft.ru/api/v2/fuel-types/
+  Топливо задаётся числовым fuel_type_id.
+  Справочник (проверен на реальных данных):
+    29=АИ-92 Танеко, 30=ДТ, 33=Метан, 34=АИ-95, 35=AdBlue (пропускаем),
+    36=АИ-92, 37=Газ, 40=АИ-98, 46=ДТ Танеко, 74=АИ-95 Танеко,
+    82=АИ-100, 83=ДТ Арктика
+  Ответ API: {"status": "success", "data": [...]}
+══════════════════════════════════════════════════════
 """
 
 import requests
@@ -39,41 +27,35 @@ from db.supabase_client import upsert_station, upsert_price
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# МАППИНГ ТОПЛИВА РОСНЕФТИ → наши стандартные названия
+# РОСНЕФТЬ — маппинг кодов топлива → наши стандартные названия
 # ─────────────────────────────────────────────────────────────────────────────
-# "fora" = премиальные марки топлива Роснефти (Pulsar)
-# Мы сохраняем их как отдельный тип, чтобы приложение могло их показать
 ROSNEFT_FUEL_MAP = {
-    "ai92":         "gasoline_92",
-    "ai95":         "gasoline_95",
-    "ai98":         "gasoline_98",
-    "ai100":        "gasoline_100",
-    "diesel":       "diesel",
-    "дизель":       "diesel",       # встречается написание кириллицей
-    "gaz":          "lpg",
-    "газ":          "lpg",          # кириллица
-    "methane":      "cng",
-    "метан":        "cng",          # кириллица
-    # Премиальные марки Pulsar / ATUM
-    "ai95_fora":    "gasoline_95_premium",
-    "ai100_fora":   "gasoline_100_premium",
-    "diesel_fora":  "diesel_premium",
-    "ai92_atum":    "gasoline_92_premium",
-    "ai95_atum":    "gasoline_95_premium",
+    # Обычные марки
+    "ai92":        "gasoline_92",
+    "ai95":        "gasoline_95",
+    "ai98":        "gasoline_98",
+    "ai100":       "gasoline_100",
+    "diesel":      "diesel",
+    "дизель":      "diesel",        # кириллица встречается в реальных данных
+    "gaz":         "lpg",
+    "газ":         "lpg",           # кириллица
+    "methane":     "cng",
+    "метан":       "cng",           # кириллица
+    # Премиальные марки Pulsar и ATUM
+    "ai95_fora":   "gasoline_95_premium",
+    "ai100_fora":  "gasoline_100_premium",
+    "diesel_fora": "diesel_premium",
+    "ai92_atum":   "gasoline_92_premium",
+    "ai95_atum":   "gasoline_95_premium",
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# РОСНЕФТЬ
-# ─────────────────────────────────────────────────────────────────────────────
-
 class RosneftScraper(BaseScraper):
     """
-    Парсер сети АЗС Роснефть.
-    Один GET-запрос возвращает все ~3000 станций по России сразу.
+    Парсер сети АЗС Роснефть (~3000 станций по всей России).
+    Один GET-запрос возвращает все станции сразу.
     """
 
-    # Реальный API endpoint, найденный через DevTools
     API_URL = "https://rosneft-azs.ru/front-api/stations"
 
     def __init__(self, client):
@@ -81,155 +63,114 @@ class RosneftScraper(BaseScraper):
         self.country = "RU"
         self.currency = "RUB"
         self.brand = "Роснефть"
-
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Accept": "application/json, text/plain, */*",
+            "Accept":  "application/json, text/plain, */*",
             # Сайт проверяет Referer — без него может вернуть 403
             "Referer": "https://rosneft-azs.ru/stations",
             "Origin":  "https://rosneft-azs.ru",
         }
 
-    def _load_stations(self) -> tuple[list, dict]:
+    def _load(self) -> tuple[list, dict]:
         """
         Загружает все АЗС одним запросом.
-        Возвращает (список станций, словарь регионов {код: название}).
+        Возвращает (список станций, словарь регионов {код → название}).
         """
         for attempt in range(3):
             try:
-                r = requests.get(
-                    self.API_URL,
-                    headers=self.headers,
-                    timeout=60   # большой таймаут — ответ может быть ~2-3 МБ
-                )
-
+                r = requests.get(self.API_URL, headers=self.headers, timeout=60)
                 if r.status_code == 429:
                     wait = 2 ** attempt
-                    print(f"[RU/Роснефть] Лимит запросов (429), ждём {wait}с...")
+                    print(f"[RU/Роснефть] 429, ждём {wait}с...")
                     time.sleep(wait)
                     continue
-
                 r.raise_for_status()
-                data = r.json()
-
-                # Ответ обёрнут в {"data": {...}}
-                inner = data.get("data", data)
-
+                inner = r.json().get("data", {})
                 stations = inner.get("stations", [])
-
-                # Строим словарь регионов: {45: "Курганская область", ...}
                 regions = {
                     reg["code"]: reg["name"]
                     for reg in inner.get("regions", [])
                     if "code" in reg and "name" in reg
                 }
-
                 return stations, regions
-
             except Exception as e:
                 if attempt == 2:
                     raise
-                print(f"[RU/Роснефть] Ошибка загрузки (попытка {attempt+1}/3): {e}")
+                print(f"[RU/Роснефть] Ошибка (попытка {attempt+1}/3): {e}")
                 time.sleep(2)
-
         return [], {}
 
-    def _get_fuel_list(self, station: dict) -> list:
+    def _fuel_list(self, st: dict) -> list:
         """
-        Получает список топлива из объекта станции.
-        API непоследователен: иногда ключ "fuels", иногда "топливо".
-        Проверяем оба варианта.
+        Возвращает список топлива из объекта станции.
+        В реальных данных ключ бывает "fuels" или "топливо" (кириллица).
         """
-        fuels = station.get("fuels")
-        if isinstance(fuels, list) and fuels:
-            return fuels
-
-        fuels = station.get("топливо")
-        if isinstance(fuels, list) and fuels:
-            return fuels
-
+        for key in ("fuels", "топливо"):
+            val = st.get(key)
+            if isinstance(val, list) and val:
+                return val
         return []
 
-    def _get_city(self, station: dict, regions: dict) -> str:
-        """
-        Пытается определить город/регион АЗС.
-        API не отдаёт город напрямую — берём название региона.
-        """
-        region_code = station.get("region")
-        if region_code and region_code in regions:
-            return regions[region_code]
-        return ""
-
     def scrape(self):
-        print(f"[RU/Роснефть] Загружаем список АЗС...")
+        print("[RU/Роснефть] Загружаем список АЗС...")
+        stations_raw, regions = self._load()
+        print(f"[RU/Роснефть] Получено {len(stations_raw)} АЗС")
 
-        stations_raw, regions = self._load_stations()
-        print(f"[RU/Роснефть] Получено {len(stations_raw)} АЗС из API")
-
-        # Для отладки — показываем первую станцию
         if stations_raw:
-            first = stations_raw[0]
-            print(f"[RU/Роснефть] Пример первой АЗС: id={first.get('id')}, "
-                  f"адрес={first.get('address', '')[:50]}, "
-                  f"топливо: {self._get_fuel_list(first)}")
+            s = stations_raw[0]
+            print(f"[RU/Роснефть] Пример: id={s.get('id')}, "
+                  f"адрес={str(s.get('address', ''))[:60]}, "
+                  f"топливо={self._fuel_list(s)}")
 
         for st in stations_raw:
             try:
-                self._save_station(st, regions)
+                self._save(st, regions)
             except Exception as e:
-                print(f"[RU/Роснефть] Ошибка станции id={st.get('id')}: {e}")
+                print(f"[RU/Роснефть] Ошибка id={st.get('id')}: {e}")
 
         print(f"[RU/Роснефть] Готово: {self.stations_count} АЗС, "
               f"{self.prices_count} цен")
 
-    def _save_station(self, st: dict, regions: dict):
+    def _save(self, st: dict, regions: dict):
         sid = str(st.get("id", ""))
-        if not sid:
-            return
-
         coord = st.get("coordinate", {})
-        lat = coord.get("lat")
-        lon = coord.get("lng")
-        if not lat or not lon:
+        lat, lon = coord.get("lat"), coord.get("lng")
+        if not sid or not lat or not lon:
             return
 
-        # Номер АЗС — бывает ключ "номер" (кириллица) или "number"
+        # Номер АЗС — ключ бывает "номер" (кириллица) или "number"
         number = st.get("номер") or st.get("number") or ""
+        org = st.get("name", self.brand)
+        full_name = f"{org} {number}".strip() if number else org
 
-        # Название: "Курганнефтепродукт АЗС 2"
-        org_name = st.get("name", self.brand)
-        full_name = f"{org_name} {number}".strip() if number else org_name
+        # Город не передаётся напрямую — берём название региона
+        region_code = st.get("region")
+        city = regions.get(region_code, "") if region_code else ""
 
-        station = {
+        station_id = upsert_station(self.client, {
             "country":   self.country,
             "brand":     self.brand,
             "name":      full_name,
             "address":   st.get("address", "") or "",
-            "city":      self._get_city(st, regions),
+            "city":      city,
             "latitude":  float(lat),
             "longitude": float(lon),
             "logo_url":  self.get_brand_logo(self.brand),
-            # Префикс "rosneft_" защищает от пересечения ID с другими сетями
             "source_id": f"rosneft_{sid}",
-        }
-
-        station_id = upsert_station(self.client, station)
+        })
         self.stations_count += 1
 
-        # Сохраняем цены
-        for fuel_item in self._get_fuel_list(st):
-            code = fuel_item.get("code", "")
+        for item in self._fuel_list(st):
+            code = item.get("code", "")
             # Цена — ключ "price" или "цена" (кириллица)
-            price_raw = fuel_item.get("price") or fuel_item.get("цена")
-
+            price_raw = item.get("price") or item.get("цена")
             fuel_type = ROSNEFT_FUEL_MAP.get(code)
             if not fuel_type or price_raw is None:
                 continue
-
             try:
                 price = float(str(price_raw).replace(",", ".").replace(" ", ""))
                 if price > 0:
@@ -244,191 +185,261 @@ class RosneftScraper(BaseScraper):
 # ТАТНЕФТЬ
 # ─────────────────────────────────────────────────────────────────────────────
 
-# TODO: заменить на реальный URL после поиска через DevTools
-# Ссылка на Яндекс Метрику которую ты прислал — это не API АЗС,
-# а аналитика кликов. Нужно найти XHR/Fetch запрос с данными станций.
-TATNEFT_API_URL = "https://api.gs.tatneft.ru/api/v2/azs/"  # предположительный URL
-
+# Точный маппинг fuel_type_id → наш стандартный код.
+# Получен из реального справочника https://api.gs.tatneft.ru/api/v2/fuel-types/
+# Структура ответа: {"status":"success","data":{"items":[...],"updated":...}}
+# Поле "title" содержит название, "is_taneco"=true означает топливо марки Танеко.
 TATNEFT_FUEL_MAP = {
-    "АИ-92":     "gasoline_92",
-    "АИ-95":     "gasoline_95",
-    "АИ-98":     "gasoline_98",
-    "АИ-100":    "gasoline_100",
-    "ДТ":        "diesel",
-    "дизель":    "diesel",
-    "СУГ":       "lpg",
-    "Метан":     "cng",
-    "КПГ":       "cng",
-    # Английские варианты на случай если API использует их
-    "ai92":      "gasoline_92",
-    "ai95":      "gasoline_95",
-    "ai98":      "gasoline_98",
-    "diesel":    "diesel",
-    "lpg":       "lpg",
-    "cng":       "cng",
+    29: "gasoline_92_premium",  # АИ-92 Танеко  (is_taneco=True)
+    30: "diesel",               # ДТ             (обычный)
+    33: "cng",                  # Метан / КПГ
+    34: "gasoline_95",          # АИ-95          (обычный)
+    # 35: AdBlue — это не топливо для автомобиля, пропускаем
+    36: "gasoline_92",          # АИ-92          (обычный)
+    37: "lpg",                  # Газ / СУГ
+    40: "gasoline_98",          # АИ-98
+    46: "diesel_premium",       # ДТ Танеко      (is_taneco=True)
+    74: "gasoline_95_premium",  # АИ-95 Танеко   (is_taneco=True)
+    82: "gasoline_100",         # АИ-100
+    83: "diesel_arctic",        # ДТ Арктика Танеко (зимнее)
 }
+
+# IDs которые намеренно пропускаем (не виды топлива)
+TATNEFT_SKIP_IDS = {35}  # AdBlue — жидкость для катализатора, не топливо
 
 
 class TatneftScraper(BaseScraper):
     """
-    Парсер сети АЗС Татнефть (~900 станций, преимущественно Татарстан).
+    Парсер сети АЗС Татнефть (~900 станций, Татарстан и соседние регионы).
 
-    КАК НАЙТИ API ENDPOINT (нужно сделать один раз):
-    1. Открой https://azs.tatneft.ru/locator в Chrome
-    2. F12 → Network → очисти (🚫) → обнови страницу F5
-    3. Подожди 5-10 секунд пока карта загрузится
-    4. В фильтре введи: XHR (или Fetch/XHR)
-    5. Ищи запрос который возвращает JSON со списком АЗС
-       (ищи по ключевым словам: station, azs, map, list, markers)
-    6. Нажми на запрос → Headers → скопируй Request URL
-    7. Вставь URL в константу TATNEFT_API_URL выше
+    Структура одной АЗС в ответе API:
+    {
+      "id": 2,
+      "lat": 55.824423,
+      "lon": 49.156411,
+      "region": "Казань, районы прилегающие к городу",
+      "number": 14,
+      "address": "Республика Татарстан, г.Казань, Ямашева проспект, 105а/1",
+      "currency_code": "rub",
+      "actualization_date": 1778781005,
+      "fuel": [
+        {"fuel_type_id": 46, "price": 74.32, "discount_price": null, ...},
+        {"fuel_type_id": 36, "price": 62.10, ...},
+        {"fuel_type_id": 37, "price": 26.90, ...},  ← СУГ (газ)
+        {"fuel_type_id": 29, "price": 63.10, ...},  ← АИ-92 Танеко
+        {"fuel_type_id": 34, "price": 66.20, ...},  ← АИ-95
+        {"fuel_type_id": 82, "price": 90.05, ...},  ← АИ-100
+      ],
+      "connector": [...],   ← зарядки для электромобилей, не используем
+      "photos": ["https://gis-media.cloud.tatneftm.ru/..."],
+      "owner": "tatneft"
+    }
     """
+
+    API_STATIONS   = "https://api.gs.tatneft.ru/api/v2/azs/"
+    API_FUEL_TYPES = "https://api.gs.tatneft.ru/api/v2/fuel-types/"
 
     def __init__(self, client):
         super().__init__(client)
         self.country = "RU"
         self.currency = "RUB"
         self.brand = "Татнефть"
-
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Accept": "application/json, text/plain, */*",
+            "Accept":  "application/json, text/plain, */*",
             "Referer": "https://azs.tatneft.ru/locator",
             "Origin":  "https://azs.tatneft.ru",
         }
 
-    def _load_stations(self) -> list:
+    def _load_fuel_types(self) -> dict[int, str]:
         """
-        Загружает список АЗС Татнефти.
-        Сайт может требовать cookie с главной страницы — используем сессию.
-        """
-        session = requests.Session()
-        session.headers.update(self.headers)
+        Загружает актуальный справочник типов топлива из API.
+        Возвращает словарь {fuel_type_id: "gasoline_95"}.
 
-        # Шаг 1: получаем главную страницу чтобы подхватить cookies
+        Структура ответа API:
+        {
+          "status": "success",
+          "data": {
+            "items": [
+              {"id": 34, "title": "АИ-95", "is_taneco": false, ...},
+              {"id": 46, "title": "ДТ ",   "is_taneco": true,  ...},
+              ...
+            ],
+            "updated": 1778780703.051342
+          }
+        }
+
+        Если API недоступен — используем встроенный словарь TATNEFT_FUEL_MAP.
+        """
+        # Маппинг названий из справочника → наши коды
+        # Используем filter_group_title — он чище чем title (нет лишних пробелов)
+        name_to_type = {
+            "аи 92":         "gasoline_92",
+            "аи 92 танеко":  "gasoline_92_premium",
+            "аи 95":         "gasoline_95",
+            "аи 95 танеко":  "gasoline_95_premium",
+            "аи 98":         "gasoline_98",
+            "аи 100":        "gasoline_100",
+            "дт":            "diesel",
+            "дт танеко":     "diesel_premium",
+            "дт арктика":    "diesel_arctic",
+            "газ":           "lpg",
+            "кпг":           "cng",
+            "метан":         "cng",
+            # adblue — намеренно не добавляем, это не топливо
+        }
+
         try:
-            session.get("https://azs.tatneft.ru/locator", timeout=30)
-        except Exception as e:
-            print(f"[RU/Татнефть] Не удалось загрузить стартовую страницу: {e}")
-            # Продолжаем — может API работает и без cookies
+            r = requests.get(self.API_FUEL_TYPES, headers=self.headers, timeout=15)
+            r.raise_for_status()
+            resp = r.json()
 
-        # Шаг 2: запрашиваем API
-        for attempt in range(3):
-            try:
-                r = session.get(TATNEFT_API_URL, timeout=60)
+            # Ответ обёрнут: {"status":"success","data":{"items":[...]}}
+            items = resp.get("data", {}).get("items", [])
+            if not items:
+                raise ValueError("Пустой список items в ответе справочника")
 
-                if r.status_code == 429:
-                    wait = 2 ** attempt
-                    print(f"[RU/Татнефть] Лимит запросов (429), ждём {wait}с...")
-                    time.sleep(wait)
+            result = {}
+            unknown = []
+
+            for item in items:
+                fid = item.get("id")
+                if fid is None or fid in TATNEFT_SKIP_IDS:
                     continue
 
-                if r.status_code == 401:
-                    raise RuntimeError(
-                        "Сервер вернул 401 (нет доступа). "
-                        "Вероятно API_URL неверный или требует авторизацию. "
-                        "Найди правильный endpoint через DevTools (инструкция в коде)."
-                    )
+                # filter_group_title чище: "АИ 95 Танеко" вместо "АИ-95 "
+                group = (item.get("filter_group_title") or "").strip().lower()
+                title = (item.get("title") or "").strip().lower()
 
+                fuel_type = name_to_type.get(group) or name_to_type.get(title)
+
+                if fuel_type:
+                    result[fid] = fuel_type
+                else:
+                    unknown.append({"id": fid, "title": title, "group": group})
+
+            if unknown:
+                print(f"[RU/Татнефть] ⚠ Неизвестные типы топлива в справочнике: {unknown}")
+                print(f"[RU/Татнефть]   Добавь их в name_to_type в методе _load_fuel_types()")
+
+            print(f"[RU/Татнефть] Справочник загружен: {len(result)} типов топлива")
+            # Дополняем встроенным маппингом — на случай если API вернул не все ID
+            combined = {**TATNEFT_FUEL_MAP, **result}
+            return combined
+
+        except Exception as e:
+            print(f"[RU/Татнефть] Не удалось загрузить справочник: {e}")
+            print(f"[RU/Татнефть] Используем встроенный маппинг TATNEFT_FUEL_MAP")
+            return TATNEFT_FUEL_MAP.copy()
+
+    def _load_stations(self) -> list:
+        """
+        Загружает все АЗС одним запросом.
+        Ответ: {"status": "success", "data": [...список АЗС...]}
+        """
+        for attempt in range(3):
+            try:
+                r = requests.get(self.API_STATIONS, headers=self.headers, timeout=60)
+                if r.status_code == 429:
+                    wait = 2 ** attempt
+                    print(f"[RU/Татнефть] 429, ждём {wait}с...")
+                    time.sleep(wait)
+                    continue
                 r.raise_for_status()
-                data = r.json()
+                resp = r.json()
 
-                # Пробуем разные варианты структуры ответа
+                # Ответ: {"status": "success", "data": [...]}
+                data = resp.get("data", resp)
                 if isinstance(data, list):
                     return data
-                for key in ("data", "stations", "items", "results", "list"):
-                    if key in data and isinstance(data[key], list):
-                        return data[key]
 
-                # Если структура неизвестна — выводим для отладки
-                print(f"[RU/Татнефть] Неизвестная структура: {list(data.keys())[:5]}")
+                print(f"[RU/Татнефть] Неожиданная структура data: {type(data)}")
                 return []
 
-            except RuntimeError:
-                raise  # пробрасываем нашу ошибку без повтора
             except Exception as e:
                 if attempt == 2:
                     raise
-                print(f"[RU/Татнефть] Ошибка (попытка {attempt+1}/3): {e}")
+                print(f"[RU/Татнефть] Ошибка загрузки (попытка {attempt+1}/3): {e}")
                 time.sleep(2)
-
         return []
 
     def scrape(self):
-        print(f"[RU/Татнефть] Загружаем список АЗС...")
+        print("[RU/Татнефть] Загружаем справочник типов топлива...")
+        fuel_map = self._load_fuel_types()
 
-        try:
-            stations_raw = self._load_stations()
-        except Exception as e:
-            print(f"[RU/Татнефть] ОШИБКА: {e}")
-            print(f"[RU/Татнефть] Текущий API URL: {TATNEFT_API_URL}")
-            raise
-
+        print("[RU/Татнефть] Загружаем список АЗС...")
+        stations_raw = self._load_stations()
         print(f"[RU/Татнефть] Получено {len(stations_raw)} АЗС")
 
         if stations_raw:
-            print(f"[RU/Татнефть] Пример первой АЗС: {stations_raw[0]}")
+            s = stations_raw[0]
+            print(f"[RU/Татнефть] Пример: id={s.get('id')}, "
+                  f"АЗС №{s.get('number')}, "
+                  f"адрес={str(s.get('address', ''))[:60]}")
+            # Показываем как расшифруются цены первой АЗС
+            for item in s.get("fuel", []):
+                fid = item.get("fuel_type_id")
+                ft = fuel_map.get(fid, "?")
+                print(f"  fuel_type_id={fid} → {ft}: {item.get('price')} руб")
 
         for st in stations_raw:
             try:
-                self._save_station(st)
+                self._save(st, fuel_map)
             except Exception as e:
-                print(f"[RU/Татнефть] Ошибка станции: {e}")
+                print(f"[RU/Татнефть] Ошибка id={st.get('id')}: {e}")
 
         print(f"[RU/Татнефть] Готово: {self.stations_count} АЗС, "
               f"{self.prices_count} цен")
 
-    def _save_station(self, st: dict):
-        # Координаты — перебираем возможные варианты полей
-        lat = (st.get("lat") or st.get("latitude") or
-               st.get("coord", {}).get("lat") or
-               st.get("coordinate", {}).get("lat"))
-        lon = (st.get("lon") or st.get("lng") or st.get("longitude") or
-               st.get("coord", {}).get("lon") or
-               st.get("coordinate", {}).get("lng"))
-
-        if not lat or not lon:
+    def _save(self, st: dict, fuel_map: dict):
+        sid = str(st.get("id", ""))
+        lat = st.get("lat")
+        lon = st.get("lon")
+        if not sid or lat is None or lon is None:
             return
 
-        sid = str(st.get("id") or st.get("stationId") or st.get("station_id") or "")
-        if not sid:
-            return
+        number = st.get("number", "")
+        full_name = f"{self.brand} АЗС {number}".strip() if number else self.brand
 
-        station = {
+        station_id = upsert_station(self.client, {
             "country":   self.country,
             "brand":     self.brand,
-            "name":      st.get("name") or st.get("title") or self.brand,
-            "address":   st.get("address") or st.get("addr") or "",
-            "city":      st.get("city") or st.get("settlement") or st.get("region") or "",
+            "name":      full_name,
+            "address":   st.get("address", "") or "",
+            # API отдаёт регион строкой: "Казань, районы прилегающие к городу"
+            "city":      (st.get("region") or "").strip(),
             "latitude":  float(lat),
             "longitude": float(lon),
             "logo_url":  self.get_brand_logo(self.brand),
             "source_id": f"tatneft_{sid}",
-        }
-
-        station_id = upsert_station(self.client, station)
+        })
         self.stations_count += 1
 
-        # Цены — перебираем возможные ключи
-        fuel_list = (st.get("fuels") or st.get("products") or
-                     st.get("prices") or st.get("fuelPrices") or [])
+        for item in st.get("fuel", []):
+            fid = item.get("fuel_type_id")
 
-        for item in fuel_list:
-            fuel_name = (item.get("type") or item.get("name") or
-                         item.get("code") or item.get("fuelType") or "")
-            price_raw = item.get("price") or item.get("cost") or item.get("value")
-            fuel_type = TATNEFT_FUEL_MAP.get(fuel_name)
+            # Пропускаем намеренно исключённые типы (AdBlue)
+            if fid in TATNEFT_SKIP_IDS:
+                continue
 
-            if fuel_type and price_raw:
-                try:
-                    price = float(str(price_raw).replace(",", ".").replace(" ", ""))
-                    if price > 0:
-                        upsert_price(self.client, station_id,
-                                     fuel_type, price, self.currency)
-                        self.prices_count += 1
-                except (ValueError, TypeError):
-                    pass
+            fuel_type = fuel_map.get(fid)
+            if not fuel_type:
+                continue
+
+            # Берём скидочную цену если есть, иначе обычную
+            price_raw = item.get("discount_price") or item.get("price")
+            if price_raw is None:
+                continue
+
+            try:
+                price = float(price_raw)
+                if price > 0:
+                    upsert_price(self.client, station_id,
+                                 fuel_type, price, self.currency)
+                    self.prices_count += 1
+            except (ValueError, TypeError):
+                pass
