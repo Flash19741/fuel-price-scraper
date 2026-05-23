@@ -46,13 +46,13 @@ def main():
     # Чтобы временно отключить страну — закомментируй её строку.
     scrapers = [
         (MoldovaScraper, "MD"),
-        (RomaniaScraper, "RO"),
-        (ItalyScraper,   "IT"),
-        (RosneftScraper,   "RU"),
-        (TatneftScraper,  "RU"),
-        (NeftikaScraper, "RU"),
-        (TrassaScraper,  "RU"),
-        (A100Scraper,    "BY"),
+        #(RomaniaScraper, "RO"),
+        #(ItalyScraper,   "IT"),
+        #(RosneftScraper,   "RU"),
+        #(TatneftScraper,  "RU"),
+        #(NeftikaScraper, "RU"),
+        #(TrassaScraper,  "RU"),
+        #(A100Scraper,    "BY"),
             ]
 
     for scraper_class, country in scrapers:
