@@ -31,7 +31,7 @@ class BaseScraper(ABC):
         # Словарь известных брендов → URL логотипа
         logos = {
             "petrom":    "https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/Petrom_logo.svg/200px-Petrom_logo.svg.png",
-            "lukoil":    "https://raw.githubusercontent.com/Flash19741/fuel-logo-/main/moldova/lukoil.png",
+            "LUKOIL":    "https://raw.githubusercontent.com/Flash19741/fuel-logo-/main/moldova/lukoil.png",
             "shell":     "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8c/Shell_Global_logo.svg/200px-Shell_Global_logo.svg.png",
             "bp":        "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/BP_Helios_logo.svg/200px-BP_Helios_logo.svg.png",
             "total":     "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0e/Logo_TotalEnergies.svg/200px-Logo_TotalEnergies.svg.png",
