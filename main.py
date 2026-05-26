@@ -45,11 +45,11 @@ def main():
     # Список скраперов для запуска.
     # Чтобы временно отключить страну — закомментируй её строку.
     scrapers = [
-        (MoldovaScraper, "MD"),
-        (RomaniaScraper, "RO"),
-        #(ItalyScraper,   "IT"),
-        (RosneftScraper,   "RU"),
-        (TatneftScraper,  "RU"),
+        #(MoldovaScraper, "MD"),
+        #(RomaniaScraper, "RO"),
+        (ItalyScraper,   "IT"),
+        #(RosneftScraper,   "RU"),
+        #(TatneftScraper,  "RU"),
         #(NeftikaScraper, "RU"),
         #(TrassaScraper,  "RU"),
         #(A100Scraper,    "BY"),
